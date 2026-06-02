@@ -4,40 +4,80 @@ from app.models import Complaint
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import uuid
 import hashlib
+import os
+import requests
 
 complaints_bp = Blueprint('complaints', __name__)
+
+PINATA_API_KEY = os.getenv('PINATA_API_KEY')
+PINATA_SECRET_API_KEY = os.getenv('PINATA_SECRET_API_KEY')
+PINATA_PIN_URL = 'https://api.pinata.cloud/pinning/pinFileToIPFS'
+
+
+def upload_to_pinata(file_bytes, filename):
+    """Upload file bytes to Pinata IPFS. Returns CID string or raises."""
+    headers = {
+        'pinata_api_key': PINATA_API_KEY,
+        'pinata_secret_api_key': PINATA_SECRET_API_KEY,
+    }
+    files = {'file': (filename, file_bytes)}
+    response = requests.post(PINATA_PIN_URL, headers=headers, files=files, timeout=30)
+    response.raise_for_status()
+    return response.json()['IpfsHash']
+
 
 @complaints_bp.route('/submit', methods=['POST'])
 @jwt_required()
 def submit_complaint():
     user_id = get_jwt_identity()
-    data = request.get_json()
+
+    description = request.form.get('description', '') if request.form else request.get_json(silent=True, force=True).get('description', '')
 
     complaint_id = str(uuid.uuid4())[:8].upper()
+    ipfs_cid = None
+    evidence_hash = None
 
-    # Generate SHA-256 hash of description as placeholder
-    # Later this will hash the actual evidence file
-    evidence_hash = hashlib.sha256(
-        data.get('description', '').encode()
-    ).hexdigest()
+    evidence_file = request.files.get('evidence')
+    if evidence_file:
+        file_bytes = evidence_file.read()
+        evidence_hash = hashlib.sha256(file_bytes).hexdigest()
+
+        if PINATA_API_KEY and PINATA_SECRET_API_KEY:
+            try:
+                ipfs_cid = upload_to_pinata(file_bytes, evidence_file.filename or 'evidence')
+            except requests.HTTPError as e:
+                return jsonify({'error': f'Pinata upload failed: {e.response.text}'}), 502
+            except requests.RequestException as e:
+                return jsonify({'error': f'Pinata connection error: {str(e)}'}), 502
+        else:
+            return jsonify({'error': 'Pinata API keys not configured'}), 500
+    else:
+        # No file — hash the description as a placeholder
+        evidence_hash = hashlib.sha256(description.encode()).hexdigest()
 
     complaint = Complaint(
         complaint_id=complaint_id,
         user_id=user_id,
-        description=data.get('description', ''),
+        description=description,
         evidence_hash=evidence_hash,
+        ipfs_cid=ipfs_cid,
         status='SUBMITTED'
     )
 
     db.session.add(complaint)
     db.session.commit()
 
-    return jsonify({
+    response_data = {
         'message': 'Complaint submitted successfully',
         'complaint_id': complaint_id,
         'evidence_hash': evidence_hash,
         'status': 'SUBMITTED'
-    }), 201
+    }
+    if ipfs_cid:
+        response_data['ipfs_cid'] = ipfs_cid
+        response_data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{ipfs_cid}'
+
+    return jsonify(response_data), 201
 
 
 @complaints_bp.route('/status/<complaint_id>', methods=['GET'])
@@ -48,9 +88,14 @@ def get_status(complaint_id):
     if not complaint:
         return jsonify({'error': 'Complaint not found'}), 404
 
-    return jsonify({
+    data = {
         'complaint_id': complaint.complaint_id,
         'status': complaint.status,
         'evidence_hash': complaint.evidence_hash,
         'created_at': complaint.created_at.isoformat()
-    }), 200
+    }
+    if complaint.ipfs_cid:
+        data['ipfs_cid'] = complaint.ipfs_cid
+        data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{complaint.ipfs_cid}'
+
+    return jsonify(data), 200

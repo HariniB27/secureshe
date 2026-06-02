@@ -1,7 +1,39 @@
+# Environment variables
 .env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
-*.pyc
-*.pyo
-instance/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environment
 venv/
+env/
+.venv/
+
+# Flask instance folder (contains SQLite DB)
+instance/
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
