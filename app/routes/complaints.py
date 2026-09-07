@@ -6,6 +6,7 @@ import uuid
 import hashlib
 import os
 import requests
+from app.blockchain import log_complaint_on_chain
 
 complaints_bp = Blueprint('complaints', __name__)
 
@@ -55,12 +56,21 @@ def submit_complaint():
         # No file — hash the description as a placeholder
         evidence_hash = hashlib.sha256(description.encode()).hexdigest()
 
+    blockchain_tx = None
+    try:
+        blockchain_tx = log_complaint_on_chain(complaint_id, evidence_hash)
+    except Exception as e:
+        # Don't fail the whole submission if the chain write fails — the complaint and its
+        # hash are still saved in the database below. Logged so it can be retried/backfilled.
+        print(f"[blockchain] failed to log complaint {complaint_id}: {e}")
+
     complaint = Complaint(
         complaint_id=complaint_id,
         user_id=user_id,
         description=description,
         evidence_hash=evidence_hash,
         ipfs_cid=ipfs_cid,
+        blockchain_tx=blockchain_tx,
         status='SUBMITTED'
     )
 
@@ -76,6 +86,9 @@ def submit_complaint():
     if ipfs_cid:
         response_data['ipfs_cid'] = ipfs_cid
         response_data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{ipfs_cid}'
+    if blockchain_tx:
+        response_data['blockchain_tx'] = blockchain_tx
+        response_data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{blockchain_tx}'
 
     return jsonify(response_data), 201
 
@@ -97,5 +110,8 @@ def get_status(complaint_id):
     if complaint.ipfs_cid:
         data['ipfs_cid'] = complaint.ipfs_cid
         data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{complaint.ipfs_cid}'
+    if complaint.blockchain_tx:
+        data['blockchain_tx'] = complaint.blockchain_tx
+        data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{complaint.blockchain_tx}'
 
     return jsonify(data), 200
