@@ -34,6 +34,14 @@ def submit_complaint():
 
     description = request.form.get('description', '') if request.form else request.get_json(silent=True, force=True).get('description', '')
 
+    lat_raw = request.form.get('lat') if request.form else None
+    lng_raw = request.form.get('lng') if request.form else None
+    try:
+        latitude = float(lat_raw) if lat_raw not in (None, '') else None
+        longitude = float(lng_raw) if lng_raw not in (None, '') else None
+    except ValueError:
+        return jsonify({'error': 'lat/lng must be valid numbers'}), 400
+
     complaint_id = str(uuid.uuid4())[:8].upper()
     ipfs_cid = None
     evidence_hash = None
@@ -71,6 +79,8 @@ def submit_complaint():
         evidence_hash=evidence_hash,
         ipfs_cid=ipfs_cid,
         blockchain_tx=blockchain_tx,
+        latitude=latitude,
+        longitude=longitude,
         status='SUBMITTED'
     )
 
@@ -89,6 +99,9 @@ def submit_complaint():
     if blockchain_tx:
         response_data['blockchain_tx'] = blockchain_tx
         response_data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{blockchain_tx}'
+    if latitude is not None or longitude is not None:
+        response_data['latitude'] = latitude
+        response_data['longitude'] = longitude
 
     return jsonify(response_data), 201
 
