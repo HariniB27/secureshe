@@ -26,6 +26,14 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>SecureShe needs camera access to attach a photo as evidence to a complaint.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SecureShe needs microphone access to record audio evidence for a complaint.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>SecureShe uses Face ID to unlock your complaint archive.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>SecureShe needs photo library access to attach an existing photo as evidence to a complaint.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

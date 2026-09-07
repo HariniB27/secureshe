@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
@@ -35,25 +37,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _error = null;
     });
 
-    final response = await ApiService.register(
-      name: _nameController.text.trim(),
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-      phone: _phoneController.text.trim(),
-    );
-
-    if (!mounted) return;
-
-    setState(() => _isLoading = false);
-
-    if (response.statusCode == 201) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Registered! Please log in.')),
+    try {
+      final response = await ApiService.register(
+        name: _nameController.text.trim(),
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        phone: _phoneController.text.trim(),
       );
-      Navigator.of(context).pop();
-    } else {
-      setState(() => _error = 'Registration failed (${response.statusCode})');
+
+      if (!mounted) return;
+
+      if (response.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Registered! Please log in.')),
+        );
+        Navigator.of(context).pop();
+        return;
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      setState(() => _error = data['error'] as String? ?? 'Registration failed');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'Cannot reach the server. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
