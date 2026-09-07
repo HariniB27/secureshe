@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -118,5 +119,50 @@ class ApiService {
     }
 
     return response;
+  }
+
+  /// POST /api/complaints/submit — multipart, with an optional evidence file
+  /// (photo or audio). Retries once via /api/auth/refresh on a 401.
+  static Future<http.Response> submitComplaint({
+    required String description,
+    Uint8List? evidenceBytes,
+    String? evidenceFilename,
+  }) {
+    return authedRequest((token) async {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/complaints/submit'),
+      )
+        ..headers['Authorization'] = 'Bearer $token'
+        ..fields['description'] = description;
+
+      if (evidenceBytes != null) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'evidence',
+            evidenceBytes,
+            filename: evidenceFilename ?? 'evidence',
+          ),
+        );
+      }
+
+      final streamedResponse = await request.send();
+      return http.Response.fromStream(streamedResponse);
+    });
+  }
+
+  /// POST /api/auth/verify-password — re-checks the current user's password
+  /// without issuing a new token. Retries once via /api/auth/refresh on a 401.
+  static Future<http.Response> verifyPassword(String password) {
+    return authedRequest((token) {
+      return http.post(
+        Uri.parse('$baseUrl/api/auth/verify-password'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'password': password}),
+      );
+    });
   }
 }

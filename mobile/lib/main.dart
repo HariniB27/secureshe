@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'screens/archive_lock_screen.dart';
+import 'screens/complaint_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
@@ -31,8 +33,8 @@ class SecureSheApp extends StatelessWidget {
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
         '/home': (context) => const PlaceholderScreen(title: 'Home'),
-        '/complaint': (context) => const PlaceholderScreen(title: 'Complaint'),
-        '/archive': (context) => const PlaceholderScreen(title: 'Archive'),
+        '/complaint': (context) => const ComplaintScreen(),
+        '/archive': (context) => const ArchiveLockScreen(),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
         '/map': (context) => const PlaceholderScreen(title: 'Map'),
       },
