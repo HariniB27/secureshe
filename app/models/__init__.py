@@ -24,3 +24,16 @@ class Complaint(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class CrimeDistrict(db.Model):
+    __tablename__ = "crime_district"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    state = db.Column(db.String(100), nullable=False)
+    district = db.Column(db.String(100), nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
+
+    total_crimes = db.Column(db.Integer, nullable=False, default=0)

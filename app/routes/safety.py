@@ -1,22 +1,10 @@
-"""
-SecureShe Safety API.
-
-The safety score is based primarily on ACTUAL CRIME SPOTS.
-
-Important:
-- Complaint latitude/longitude = actual reported crime location.
-- Live risk is calculated from complaints near the requested point.
-- District baseline is NOT used to determine the crime location.
-- District information is optional metadata only.
-"""
-
 import math
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
 from app import db
-from app.models import Complaint
+from app.models import Complaint, CrimeDistrict
 
 
 safety_bp = Blueprint("safety", __name__)
@@ -26,19 +14,17 @@ safety_bp = Blueprint("safety", __name__)
 # CONFIGURATION
 # ============================================================
 
-# Crimes within this distance influence the requested point.
 LIVE_SEARCH_RADIUS_KM = 2.0
 
-# Recent reports receive more weight than old reports.
+# Historical dataset influence radius.
+HISTORICAL_SEARCH_RADIUS_KM = 25.0
+
 RECENCY_HALF_LIFE_DAYS = 14.0
 
-# Controls how quickly multiple nearby crimes increase risk.
 LIVE_SATURATION_K = 0.6
 
-# For a road-level safety map, live crime spots should dominate.
+# Historical + live weighting.
 W_LIVE = 0.85
-
-# Small historical/background contribution.
 W_BASELINE = 0.15
 
 
@@ -47,10 +33,6 @@ W_BASELINE = 0.15
 # ============================================================
 
 def haversine_km(lat1, lng1, lat2, lng2):
-    """
-    Calculate the great-circle distance between two coordinates.
-    """
-
     earth_radius_km = 6371.0
 
     lat1_rad = math.radians(lat1)
@@ -78,17 +60,12 @@ def haversine_km(lat1, lng1, lat2, lng2):
 # ============================================================
 
 def recency_weight(created_at):
-    """
-    Give newer crime reports greater importance.
-
-    A report loses half of its weight every
-    RECENCY_HALF_LIFE_DAYS days.
-    """
 
     if created_at is None:
         return 1.0
 
     try:
+
         if created_at.tzinfo is None:
             created_at = created_at.replace(
                 tzinfo=timezone.utc
@@ -117,12 +94,6 @@ def recency_weight(created_at):
 # ============================================================
 
 def get_complaint_datetime(complaint):
-    """
-    Try the common timestamp fields used by the Complaint model.
-
-    This keeps the safety calculation compatible with the
-    existing project model.
-    """
 
     for field_name in (
         "created_at",
@@ -130,6 +101,7 @@ def get_complaint_datetime(complaint):
         "reported_at",
         "timestamp",
     ):
+
         value = getattr(
             complaint,
             field_name,
@@ -147,14 +119,6 @@ def get_complaint_datetime(complaint):
 # ============================================================
 
 def complaint_severity(complaint):
-    """
-    Assign a basic severity multiplier.
-
-    If the Complaint model contains a severity field,
-    use it.
-
-    Otherwise every report gets weight 1.0.
-    """
 
     value = getattr(
         complaint,
@@ -192,21 +156,9 @@ def complaint_severity(complaint):
 # ============================================================
 
 def live_risk(lat, lng):
-    """
-    Calculate risk using ACTUAL crime coordinates.
-
-    This is the important part of the road-level system.
-
-    A crime closer to the requested point contributes more.
-    A recent crime contributes more.
-    A severe crime contributes more.
-    """
-
-    # Approximate bounding box for a cheap database filter.
 
     lat_padding = LIVE_SEARCH_RADIUS_KM / 111.0
 
-    # Longitude degrees become smaller toward the poles.
     lng_padding = (
         LIVE_SEARCH_RADIUS_KM
         / (
@@ -259,12 +211,15 @@ def live_risk(lat, lng):
             continue
 
         try:
+
             complaint_lat = float(
                 complaint_lat
             )
+
             complaint_lng = float(
                 complaint_lng
             )
+
         except (
             TypeError,
             ValueError,
@@ -278,18 +233,9 @@ def live_risk(lat, lng):
             complaint_lng,
         )
 
-        # Remove reports outside the actual radius.
         if distance > LIVE_SEARCH_RADIUS_KM:
             continue
 
-        # Distance weighting.
-        #
-        # At the crime spot:
-        # distance_weight = 1
-        #
-        # At the edge of the radius:
-        # distance_weight approaches 0
-        #
         distance_weight = max(
             0.0,
             1.0
@@ -299,20 +245,16 @@ def live_risk(lat, lng):
             ),
         )
 
-        date_value = (
-            get_complaint_datetime(
-                complaint
-            )
+        date_value = get_complaint_datetime(
+            complaint
         )
 
         recent_weight = recency_weight(
             date_value
         )
 
-        severity_weight = (
-            complaint_severity(
-                complaint
-            )
+        severity_weight = complaint_severity(
+            complaint
         )
 
         contribution = (
@@ -343,7 +285,6 @@ def live_risk(lat, lng):
             }
         )
 
-    # Saturating risk function.
     risk = (
         1.0
         - math.exp(
@@ -361,6 +302,141 @@ def live_risk(lat, lng):
     )
 
     return risk, matched_reports
+
+
+# ============================================================
+# HISTORICAL DATASET RISK
+# ============================================================
+
+def historical_risk(lat, lng):
+
+    """
+    Calculate historical/background risk from the
+    CrimeDistrict dataset.
+
+    CrimeDistrict contains district/year totals rather
+    than individual crime incidents, so these records
+    are NOT returned as individual crime markers.
+    """
+
+    lat_padding = HISTORICAL_SEARCH_RADIUS_KM / 111.0
+
+    lng_padding = (
+        HISTORICAL_SEARCH_RADIUS_KM
+        / (
+            111.0
+            * max(
+                0.2,
+                math.cos(
+                    math.radians(lat)
+                ),
+            )
+        )
+    )
+
+    rows = (
+        CrimeDistrict.query
+        .filter(
+            CrimeDistrict.latitude.between(
+                lat - lat_padding,
+                lat + lat_padding,
+            ),
+            CrimeDistrict.longitude.between(
+                lng - lng_padding,
+                lng + lng_padding,
+            ),
+        )
+        .all()
+    )
+
+    if not rows:
+        return 0.0
+
+    weighted_crime = 0.0
+    total_weight = 0.0
+
+    for row in rows:
+
+        row_lat = row.latitude
+        row_lng = row.longitude
+
+        if row_lat is None or row_lng is None:
+            continue
+
+        try:
+
+            row_lat = float(row_lat)
+            row_lng = float(row_lng)
+
+            crimes = float(
+                row.total_crimes or 0
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        distance = haversine_km(
+            lat,
+            lng,
+            row_lat,
+            row_lng,
+        )
+
+        if distance > HISTORICAL_SEARCH_RADIUS_KM:
+            continue
+
+        # Nearby districts have more influence.
+        distance_weight = max(
+            0.0,
+            1.0
+            - (
+                distance
+                / HISTORICAL_SEARCH_RADIUS_KM
+            ),
+        )
+
+        if distance_weight <= 0:
+            continue
+
+        weighted_crime += (
+            crimes
+            * distance_weight
+        )
+
+        total_weight += distance_weight
+
+    if total_weight == 0:
+        return 0.0
+
+    average_crime = (
+        weighted_crime
+        / total_weight
+    )
+
+    # Convert historical crime volume into a
+    # bounded risk value.
+    #
+    # This is deliberately a logarithmic scaling
+    # so large district totals do not immediately
+    # produce risk = 1.0.
+
+    risk = (
+        math.log1p(average_crime)
+        / math.log1p(1000.0)
+    )
+
+    risk = min(
+        1.0,
+        max(
+            0.0,
+            risk,
+        ),
+    )
+
+    return risk
 
 
 # ============================================================
@@ -383,11 +459,6 @@ def safety_band(score):
 # ============================================================
 
 def score_point(lat, lng):
-    """
-    Calculate safety for an EXACT coordinate.
-
-    The location itself is never converted into a district.
-    """
 
     live_risk_value, matched_reports = (
         live_risk(
@@ -396,19 +467,16 @@ def score_point(lat, lng):
         )
     )
 
-    # --------------------------------------------------------
-    # Baseline is deliberately neutral.
-    #
-    # We do NOT use nearest_district here because district
-    # centroid/geocoding errors must not affect road-level
-    # crime mapping.
-    # --------------------------------------------------------
-
-    baseline_risk = 0.0
+    historical_risk_value = (
+        historical_risk(
+            lat,
+            lng,
+        )
+    )
 
     combined_risk = (
         W_LIVE * live_risk_value
-        + W_BASELINE * baseline_risk
+        + W_BASELINE * historical_risk_value
     )
 
     combined_risk = min(
@@ -438,13 +506,172 @@ def score_point(lat, lng):
             live_risk_value,
             3,
         ),
+        "historical_risk": round(
+            historical_risk_value,
+            3,
+        ),
         "live_report_count": len(
             matched_reports
         ),
         "nearby_crime_spots": matched_reports,
     }
+# ============================================================
+# GET /api/safety/heatmap
+# ============================================================
 
+@safety_bp.route("/heatmap", methods=["GET"])
+def get_safety_heatmap():
 
+    district = request.args.get("district", "").strip()
+    state = request.args.get("state", "").strip()
+
+    if not district:
+        return jsonify({
+            "error": "district parameter is required"
+        }), 400
+
+    # --------------------------------------------------------
+    # Get the district's historical coordinate.
+    # We use this only to determine the area to search.
+    # --------------------------------------------------------
+
+    district_query = CrimeDistrict.query.filter(
+        CrimeDistrict.district.ilike(district),
+        CrimeDistrict.latitude.isnot(None),
+        CrimeDistrict.longitude.isnot(None),
+    )
+
+    if state:
+        district_query = district_query.filter(
+            CrimeDistrict.state.ilike(state)
+        )
+
+    district_row = (
+        district_query
+        .order_by(CrimeDistrict.year.asc())
+        .first()
+    )
+
+    if not district_row:
+        return jsonify({
+            "district": district,
+            "state": state,
+            "points": [],
+            "message": "District not found"
+        }), 404
+
+    center_lat = float(district_row.latitude)
+    center_lng = float(district_row.longitude)
+
+    # --------------------------------------------------------
+    # Search radius around the district.
+    # --------------------------------------------------------
+
+    radius_km = 25.0
+
+    lat_padding = radius_km / 111.0
+
+    lng_padding = radius_km / (
+        111.0 * max(
+            0.2,
+            math.cos(math.radians(center_lat))
+        )
+    )
+
+    # --------------------------------------------------------
+    # Get actual complaints with coordinates.
+    # --------------------------------------------------------
+
+    complaints = (
+        Complaint.query
+        .filter(
+            Complaint.latitude.isnot(None),
+            Complaint.longitude.isnot(None),
+            Complaint.latitude.between(
+                center_lat - lat_padding,
+                center_lat + lat_padding,
+            ),
+            Complaint.longitude.between(
+                center_lng - lng_padding,
+                center_lng + lng_padding,
+            ),
+        )
+        .order_by(Complaint.created_at.desc())
+        .all()
+    )
+
+    points = []
+
+    for complaint in complaints:
+
+        try:
+            lat = float(complaint.latitude)
+            lng = float(complaint.longitude)
+        except (TypeError, ValueError):
+            continue
+
+        distance = haversine_km(
+            center_lat,
+            center_lng,
+            lat,
+            lng,
+        )
+
+        if distance > radius_km:
+            continue
+
+        # Recent complaints have more influence.
+        recent_weight = recency_weight(
+            get_complaint_datetime(complaint)
+        )
+
+        severity_weight = complaint_severity(
+            complaint
+        )
+
+        weight = (
+            recent_weight
+            * severity_weight
+        )
+
+        # ----------------------------------------------------
+        # Convert number of nearby crimes into a simple band.
+        # ----------------------------------------------------
+
+        if weight < 2:
+            risk = "low"
+        elif weight < 5:
+            risk = "medium"
+        elif weight < 10:
+            risk = "high"
+        else:
+            risk = "very_high"
+
+        points.append({
+            "id": complaint.id,
+            "lat": lat,
+            "lng": lng,
+            "weight": round(weight, 3),
+            "distance_km": round(distance, 3),
+            "risk": risk,
+            "created_at": (
+                get_complaint_datetime(complaint).isoformat()
+                if get_complaint_datetime(complaint)
+                else None
+            ),
+        })
+
+    return jsonify({
+        "district": district,
+        "state": state,
+        "center": {
+            "lat": center_lat,
+            "lng": center_lng,
+        },
+        "radius_km": radius_km,
+        "points": points,
+        "total_crime_spots": len(points),
+    })
 # ============================================================
 # GET /api/safety/score
 # ============================================================
@@ -595,3 +822,81 @@ def get_safety_scores_batch():
             "results": results
         }
     )
+# ============================================================
+# GET /api/safety/crime-points
+# Returns individual crime/complaint locations for the map.
+# ============================================================
+
+@safety_bp.route("/crime-points", methods=["GET"])
+def get_crime_points():
+
+    complaints = Complaint.query.filter(
+        Complaint.latitude.isnot(None),
+        Complaint.longitude.isnot(None),
+    ).all()
+
+    features = []
+
+    for complaint in complaints:
+
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    complaint.longitude,
+                    complaint.latitude,
+                ],
+            },
+            "properties": {
+                "id": complaint.id,
+                "complaint_id": complaint.complaint_id,
+                "description": complaint.description or "",
+                "status": complaint.status or "SUBMITTED",
+            },
+        })
+
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": features,
+    })
+# ============================================================
+# GET /api/safety/historical-crime-points
+# Returns historical crime locations as GeoJSON.
+# ============================================================
+
+@safety_bp.route("/historical-crime-points", methods=["GET"])
+def get_historical_crime_points():
+
+    rows = CrimeDistrict.query.filter(
+        CrimeDistrict.latitude.isnot(None),
+        CrimeDistrict.longitude.isnot(None),
+        CrimeDistrict.year > 0,
+    ).all()
+
+    features = []
+
+    for row in rows:
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    row.longitude,
+                    row.latitude,
+                ],
+            },
+            "properties": {
+                "id": row.id,
+                "district": row.district,
+                "state": row.state,
+                "year": row.year,
+                "total_crimes": row.total_crimes or 0,
+                "weight": row.total_crimes or 0,
+            },
+        })
+
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": features,
+    })

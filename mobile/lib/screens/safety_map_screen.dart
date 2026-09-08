@@ -1,508 +1,502 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
-
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-
-import 'package:geolocator/geolocator.dart';
-
-import '../services/safety_api_service.dart';
-
+import 'package:geolocator/geolocator.dart' as geo;
+import 'package:http/http.dart' as http;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mb;
 
 class SafetyMapScreen extends StatefulWidget {
   const SafetyMapScreen({super.key});
 
   @override
-  State<SafetyMapScreen> createState() =>
-      _SafetyMapScreenState();
+  State<SafetyMapScreen> createState() => _SafetyMapScreenState();
 }
 
-
 class _SafetyMapScreenState extends State<SafetyMapScreen> {
+  mb.MapboxMap? _mapboxMap;
+  geo.Position? _userPosition;
 
-  
+  // ============================================================
+  // API
+  // ============================================================
 
-  final SafetyApiService _safetyApi =
-      SafetyApiService();
+  static const String apiUrl =
+      'http://127.0.0.1:5000/api/safety/historical-crime-points';
 
-  LatLng? _currentLocation;
+  // ============================================================
+  // MAPBOX IDS
+  // ============================================================
 
-  int _safetyScore = 0;
+  static const String sourceId = 'crime-source';
 
-  String _band = 'unknown';
+  static const String clusterLayerId = 'crime-clusters';
 
-  int _liveReportCount = 0;
+  static const String clusterCountLayerId = 'crime-cluster-count';
 
-  double _liveRisk = 0.0;
+  static const String individualLayerId = 'individual-crimes';
 
-  Set<Marker> _markers = {};
-
-  Set<Circle> _circles = {};
+  // ============================================================
+  // STATE
+  // ============================================================
 
   bool _loading = true;
-
-
-  static const LatLng _defaultLocation =
-      LatLng(12.9716, 77.5946);
-
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-
-    _initializeMap();
   }
 
+  // ============================================================
+  // MAP CREATED
+  // ============================================================
 
-  Future<void> _initializeMap() async {
+  void _onMapCreated(mb.MapboxMap mapboxMap) {
+    _mapboxMap = mapboxMap;
+  }
 
-    await _getCurrentLocation();
+  // ============================================================
+  // STYLE LOADED
+  // ============================================================
 
-    _currentLocation ??= _defaultLocation;
+  Future<void> _onStyleLoaded(mb.StyleLoadedEventData eventData) async {
+    try {
+      // 1. Load crime data FIRST.
+      await _loadCrimePoints();
 
-    await _loadSafetyData();
-
-    if (mounted) {
+      if (!mounted) return;
 
       setState(() {
         _loading = false;
+        _error = null;
+      });
+
+      // 2. Then try to find the user's location.
+      // If location fails, the crime map still remains visible.
+      try {
+        await _getUserLocation();
+      } catch (e) {
+        debugPrint('Location error: $e');
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _loading = false;
+        _error = e.toString();
       });
     }
   }
 
+  // ============================================================
+  // GET USER LOCATION
+  // ============================================================
 
-  Future<void> _getCurrentLocation() async {
+  Future<void> _getUserLocation() async {
+    final serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
 
-    try {
-
-      bool serviceEnabled =
-          await Geolocator.isLocationServiceEnabled();
-
-      if (!serviceEnabled) {
-
-        return;
-      }
-
-
-      LocationPermission permission =
-          await Geolocator.checkPermission();
-
-
-      if (permission ==
-          LocationPermission.denied) {
-
-        permission =
-            await Geolocator.requestPermission();
-      }
-
-
-      if (permission ==
-              LocationPermission.denied ||
-          permission ==
-              LocationPermission.deniedForever) {
-
-        return;
-      }
-
-
-      final position =
-          await Geolocator.getCurrentPosition();
-
-
-      _currentLocation = LatLng(
-        position.latitude,
-        position.longitude,
-      );
-
-    } catch (e) {
-
-      debugPrint(
-        'Location error: $e',
-      );
-    }
-  }
-
-
-  Future<void> _loadSafetyData() async {
-
-    if (_currentLocation == null) {
-      return;
+    if (!serviceEnabled) {
+      throw Exception('Location services are disabled.');
     }
 
+    geo.LocationPermission permission = await geo.Geolocator.checkPermission();
 
-    try {
+    if (permission == geo.LocationPermission.denied) {
+      permission = await geo.Geolocator.requestPermission();
+    }
 
-      final result =
-          await _safetyApi.fetchScore(
-        _currentLocation!,
-      );
+    if (permission == geo.LocationPermission.denied) {
+      throw Exception('Location permission was denied.');
+    }
 
+    if (permission == geo.LocationPermission.deniedForever) {
+      throw Exception('Location permission is permanently denied.');
+    }
 
-      final markers =
-          <Marker>{};
-
-
-      /*
-       * Current user location.
-       */
-
-      markers.add(
-        Marker(
-          markerId:
-              const MarkerId('current_location'),
-
-          position:
-              _currentLocation!,
-
-          infoWindow:
-              const InfoWindow(
-            title: 'Your location',
+    final position =
+        await geo.Geolocator.getCurrentPosition(
+          locationSettings: const geo.LocationSettings(
+            accuracy: geo.LocationAccuracy.high,
           ),
-        ),
-      );
-
-
-      /*
-       * ACTUAL CRIME SPOTS
-       *
-       * These come from Complaint.latitude
-       * and Complaint.longitude in the
-       * backend database.
-       */
-
-      for (final crime
-          in result.nearbyCrimeSpots) {
-
-        markers.add(
-          Marker(
-            markerId:
-                MarkerId(
-              'crime_${crime.id}',
-            ),
-
-            position: LatLng(
-              crime.latitude,
-              crime.longitude,
-            ),
-
-            icon:
-                BitmapDescriptor.defaultMarkerWithHue(
-              BitmapDescriptor.hueRed,
-            ),
-
-            infoWindow:
-                InfoWindow(
-              title: 'Reported crime spot',
-
-              snippet:
-                  '${crime.distanceKm.toStringAsFixed(2)} km away',
-            ),
-          ),
+        ).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            throw Exception('Could not get your location within 10 seconds.');
+          },
         );
-      }
 
+    if (!mounted) return;
 
-      Color zoneColor;
+    setState(() {
+      _userPosition = position;
+    });
 
-      switch (result.band) {
-
-        case 'green':
-          zoneColor =
-              Colors.green.withValues(alpha: 0.25);
-          break;
-
-        case 'yellow':
-          zoneColor =
-              Colors.amber.withValues(alpha: 0.25);
-          break;
-
-        case 'red':
-          zoneColor =
-              Colors.red.withValues(alpha: 0.25);
-          break;
-
-        default:
-          zoneColor =
-              Colors.grey.withValues(alpha: 0.2);
-      }
-
-
-      final circles = <Circle>{
-
-        Circle(
-          circleId:
-              const CircleId('safety_zone'),
-
-          center:
-              _currentLocation!,
-
-          radius: 500,
-
-          fillColor:
-              zoneColor,
-
-          strokeWidth: 1,
-
-          strokeColor:
-              zoneColor,
+    // Move Mapbox camera to the user's location.
+    await _mapboxMap?.setCamera(
+      mb.CameraOptions(
+        center: mb.Point(
+          coordinates: mb.Position(position.longitude, position.latitude),
         ),
-      };
+        zoom: 14.0,
+      ),
+    );
+  }
 
+  // ============================================================
+  // LOAD CRIME DATA
+  // ============================================================
 
-      if (mounted) {
+  Future<void> _loadCrimePoints() async {
+    if (_mapboxMap == null) {
+      throw Exception('Mapbox map is not initialized.');
+    }
 
-        setState(() {
+    final response = await http.get(Uri.parse(apiUrl));
 
-          _safetyScore =
-              result.score;
+    if (response.statusCode != 200) {
+      throw Exception('Crime API failed: ${response.statusCode}');
+    }
 
-          _band =
-              result.band;
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
 
-          _liveReportCount =
-              result.liveReportCount;
+    final features = data['features'] as List<dynamic>? ?? [];
 
-          _liveRisk =
-              result.liveRisk;
+    if (features.isEmpty) {
+      throw Exception('No crime locations were returned by the API.');
+    }
 
-          _markers =
-              markers;
+    final featureCollection = jsonEncode(data);
 
-          _circles =
-              circles;
-        });
-      }
+    // ------------------------------------------------------------
+    // SOURCE
+    // ------------------------------------------------------------
 
+    final source = mb.GeoJsonSource(
+      id: sourceId,
+      data: featureCollection,
+
+      // Enable Mapbox clustering.
+      cluster: true,
+
+      // Distance at which points are grouped.
+      clusterRadius: 60,
+
+      // After zoom 14, show individual points.
+      clusterMaxZoom: 14,
+    );
+
+    await _mapboxMap!.style.addSource(source);
+
+    // ------------------------------------------------------------
+    // LAYERS
+    // ------------------------------------------------------------
+
+    await _addClusterLayer();
+
+    await _addClusterCountLayer();
+
+    await _addIndividualCrimeLayer();
+  }
+
+  // ============================================================
+  // CLUSTER CIRCLES
+  // ============================================================
+
+  Future<void> _addClusterLayer() async {
+    final layer = mb.CircleLayer(id: clusterLayerId, sourceId: sourceId);
+
+    // Only clustered points.
+    layer.filter = ['has', 'point_count'];
+
+    // Make the cluster size depend on number of crimes.
+    layer.circleRadius = 20.0;
+
+    // RED
+    layer.circleColor = Colors.red.toARGB32();
+
+    // White outline.
+    layer.circleStrokeWidth = 2.0;
+
+    layer.circleStrokeColor = Colors.white.toARGB32();
+
+    await _mapboxMap!.style.addLayer(layer);
+  }
+
+  // ============================================================
+  // CLUSTER COUNT
+  // ============================================================
+
+  Future<void> _addClusterCountLayer() async {
+    final layer = mb.SymbolLayer(id: clusterCountLayerId, sourceId: sourceId);
+
+    // Only clustered points.
+    layer.filter = ['has', 'point_count'];
+
+    // Display number of crimes/points in cluster.
+    layer.textField = '{point_count_abbreviated}';
+
+    layer.textSize = 14.0;
+
+    layer.textColor = Colors.white.toARGB32();
+
+    layer.textIgnorePlacement = true;
+
+    layer.textAllowOverlap = true;
+
+    await _mapboxMap!.style.addLayer(layer);
+  }
+
+  // ============================================================
+  // INDIVIDUAL CRIME POINTS
+  // ============================================================
+
+  Future<void> _addIndividualCrimeLayer() async {
+    final layer = mb.CircleLayer(id: individualLayerId, sourceId: sourceId);
+
+    // Show only non-clustered points.
+    layer.filter = [
+      '!',
+      ['has', 'point_count'],
+    ];
+
+    // Individual crime spot size.
+    layer.circleRadius = 7.0;
+
+    // Orange individual crime point.
+    layer.circleColor = Colors.orange.toARGB32();
+
+    layer.circleStrokeWidth = 1.5;
+
+    layer.circleStrokeColor = Colors.white.toARGB32();
+
+    await _mapboxMap!.style.addLayer(layer);
+  }
+
+  // ============================================================
+  // MOVE TO USER LOCATION
+  // ============================================================
+
+  Future<void> _goToMyLocation() async {
+    try {
+      await _getUserLocation();
     } catch (e) {
+      if (!mounted) return;
 
-      debugPrint(
-        'Safety API error: $e',
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.toString())));
     }
   }
 
-
-  Color _scoreColor() {
-
-    switch (_band) {
-
-      case 'green':
-        return Colors.green;
-
-      case 'yellow':
-        return Colors.orange;
-
-      case 'red':
-        return Colors.red;
-
-      default:
-        return Colors.grey;
-    }
-  }
-
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
-
-    final location =
-        _currentLocation ??
-        _defaultLocation;
-
-
+  Widget build(BuildContext context) {
     return Scaffold(
-
-      appBar: AppBar(
-        title:
-            const Text('Safety Map'),
-      ),
-
+      appBar: AppBar(title: const Text('SecureShe Crime Map')),
 
       body: Stack(
-
         children: [
+          // ------------------------------------------------------
+          // MAP
+          // ------------------------------------------------------
 
-          GoogleMap(
-
-            initialCameraPosition:
-                CameraPosition(
-              target: location,
-              zoom: 14,
+          mb.MapWidget(
+            viewport: mb.CameraViewportState(
+              center: mb.Point(coordinates: mb.Position(77.5946, 12.9716)),
+              zoom: 5.0,
             ),
 
-            
-            myLocationEnabled:
-                true,
+            onMapCreated: _onMapCreated,
 
-            myLocationButtonEnabled:
-                true,
-
-            zoomControlsEnabled:
-                false,
-
-            markers:
-                _markers,
-
-            circles:
-                _circles,
+            onStyleLoadedListener: _onStyleLoaded,
           ),
 
-
-          /*
-           * Loading indicator.
-           */
-
+          // ------------------------------------------------------
+          // LOADING
+          // ------------------------------------------------------
           if (_loading)
+            const Center(
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
 
-            const Positioned(
-              top: 20,
-              right: 20,
+                      SizedBox(width: 12),
 
-              child:
-                  Card(
-                child:
-                    Padding(
-                  padding:
-                      EdgeInsets.all(10),
-
-                  child:
-                      CircularProgressIndicator(),
+                      Text('Loading crime map...'),
+                    ],
+                  ),
                 ),
               ),
             ),
 
+          // ------------------------------------------------------
+          // ERROR
+          // ------------------------------------------------------
+          if (_error != null)
+            Center(
+              child: Card(
+                margin: const EdgeInsets.all(24),
 
-          /*
-           * Safety information card.
-           */
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
 
-          Positioned(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
 
-            left: 16,
-            right: 16,
-            bottom: 20,
+                    children: [
+                      const Icon(
+                        Icons.error_outline,
+                        color: Colors.red,
+                        size: 40,
+                      ),
 
-            child: Card(
+                      const SizedBox(height: 12),
 
-              elevation: 6,
-
-              child: Padding(
-
-                padding:
-                    const EdgeInsets.all(16),
-
-                child: Column(
-
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
-
-                  children: [
-
-                    Row(
-
-                      children: [
-
-                        Icon(
-                          Icons.shield,
-                          color:
-                              _scoreColor(),
-                        ),
-
-                        const SizedBox(
-                          width: 8,
-                        ),
-
-                        const Text(
-                          'Safety Score',
-                          style:
-                              TextStyle(
-                            fontSize: 18,
-                            fontWeight:
-                                FontWeight.bold,
-                          ),
-                        ),
-
-                        const Spacer(),
-
-                        Text(
-                          '$_safetyScore/100',
-
-                          style:
-                              TextStyle(
-                            fontSize: 22,
-                            fontWeight:
-                                FontWeight.bold,
-                            color:
-                                _scoreColor(),
-                          ),
-                        ),
-                      ],
-                    ),
-
-
-                    const SizedBox(
-                      height: 8,
-                    ),
-
-
-                    Text(
-                      'Risk level: ${_band.toUpperCase()}',
-                    ),
-
-
-                    const SizedBox(
-                      height: 4,
-                    ),
-
-
-                    Text(
-                      'Nearby reported crime spots: '
-                      '$_liveReportCount',
-                    ),
-
-
-                    const SizedBox(
-                      height: 4,
-                    ),
-
-
-                    Text(
-                      'Live risk: '
-                      '${_liveRisk.toStringAsFixed(3)}',
-                    ),
-
-
-                    const SizedBox(
-                      height: 10,
-                    ),
-
-
-                    SizedBox(
-
-                      width:
-                          double.infinity,
-
-                      child:
-                          ElevatedButton.icon(
-
-                        onPressed:
-                            _loadSafetyData,
-
-                        icon:
-                            const Icon(
-                          Icons.refresh,
-                        ),
-
-                        label:
-                            const Text(
-                          'Refresh Safety Data',
+                      const Text(
+                        'Unable to load crime map',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
                         ),
                       ),
-                    ),
-                  ],
+
+                      const SizedBox(height: 8),
+
+                      Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.red),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      ElevatedButton(
+                        onPressed: () async {
+                          setState(() {
+                            _loading = true;
+                            _error = null;
+                          });
+
+                          try {
+                            await _loadCrimePoints();
+
+                            if (!mounted) return;
+
+                            setState(() {
+                              _loading = false;
+                            });
+
+                            try {
+                              await _getUserLocation();
+                            } catch (e) {
+                              debugPrint('Location error: $e');
+                            }
+                          } catch (e) {
+                            if (!mounted) return;
+
+                            setState(() {
+                              _loading = false;
+                              _error = e.toString();
+                            });
+                          }
+                        },
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
+
+          // ------------------------------------------------------
+          // MY LOCATION BUTTON
+          // ------------------------------------------------------
+          Positioned(
+            right: 16,
+            bottom: 180,
+            child: FloatingActionButton(
+              heroTag: 'my-location',
+              onPressed: _goToMyLocation,
+              child: const Icon(Icons.my_location),
+            ),
           ),
+
+          // ------------------------------------------------------
+          // LEGEND
+          // ------------------------------------------------------
+          Positioned(left: 16, bottom: 16, child: _buildLegend()),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // LEGEND
+  // ============================================================
+
+  Widget _buildLegend() {
+    return Card(
+      elevation: 5,
+
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+
+          children: [
+            const Text(
+              'Crime Density',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+
+            const SizedBox(height: 8),
+
+            _legendItem(Colors.green, 'Low', '1 location'),
+
+            _legendItem(Colors.yellow, 'Medium', '2–4 locations'),
+
+            _legendItem(Colors.orange, 'High', '5–9 locations'),
+
+            _legendItem(Colors.red, 'Very High', '10+ locations'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // LEGEND ITEM
+  // ============================================================
+
+  Widget _legendItem(Color color, String title, String description) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+
+        children: [
+          Container(
+            width: 14,
+            height: 14,
+
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+
+          const SizedBox(width: 8),
+
+          Text('$title — $description'),
         ],
       ),
     );

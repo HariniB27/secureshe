@@ -6,8 +6,15 @@ import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
-
+import 'screens/home_screen.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  MapboxOptions.setAccessToken(
+    const String.fromEnvironment('ACCESS_TOKEN'),
+  );
+
   runApp(
     ChangeNotifierProvider(
       create: (_) => AuthState(),
@@ -30,7 +37,7 @@ class SecureSheApp extends StatelessWidget {
         '/': (context) => const SplashScreen(),
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
-        '/home': (context) => const PlaceholderScreen(title: 'Home'),
+        '/home': (context) => const HomeScreen(),
         '/complaint': (context) => const PlaceholderScreen(title: 'Complaint'),
         '/archive': (context) => const PlaceholderScreen(title: 'Archive'),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),

@@ -43,7 +43,9 @@ class AuthState extends ChangeNotifier {
   /// message from the backend on failure.
   Future<String?> login({required String email, required String password}) async {
     final response = await ApiService.login(email: email, password: password);
-
+    debugPrint('LOGIN STATUS: ${response.statusCode}');
+    debugPrint('LOGIN BODY: ${response.body}');
+    
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final user = data['user'] as Map<String, dynamic>;
