@@ -20,6 +20,7 @@ class Complaint(db.Model):
     blockchain_tx = db.Column(db.String(256), nullable=True)
     latitude = db.Column(db.Float, nullable=True)
     longitude = db.Column(db.Float, nullable=True)
+    location_source = db.Column(db.String(20), nullable=True)
     status = db.Column(db.String(50), default='SUBMITTED')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
