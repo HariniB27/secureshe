@@ -6,6 +6,7 @@ import 'screens/complaint_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
+import 'screens/safety_map_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
 
@@ -36,7 +37,7 @@ class SecureSheApp extends StatelessWidget {
         '/complaint': (context) => const ComplaintScreen(),
         '/archive': (context) => const ArchiveLockScreen(),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
-        '/map': (context) => const PlaceholderScreen(title: 'Map'),
+        '/map': (context) => const SafetyMapScreen(),
       },
     );
   }

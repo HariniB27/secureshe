@@ -165,4 +165,29 @@ class ApiService {
       );
     });
   }
+
+  /// GET /api/safety/score?lat=&lng= — public, no auth required.
+  static Future<http.Response> getSafetyScore({
+    required double lat,
+    required double lng,
+  }) {
+    return http.get(
+      Uri.parse('$baseUrl/api/safety/score?lat=$lat&lng=$lng'),
+    );
+  }
+
+  /// POST /api/safety/scores/batch — public, no auth required. Scores up to
+  /// 200 {lat, lng} points in one request; used to paint many map markers
+  /// without one HTTP call per marker.
+  static Future<http.Response> getSafetyScoresBatch(
+    List<({double lat, double lng})> points,
+  ) {
+    return http.post(
+      Uri.parse('$baseUrl/api/safety/scores/batch'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'points': points.map((p) => {'lat': p.lat, 'lng': p.lng}).toList(),
+      }),
+    );
+  }
 }
