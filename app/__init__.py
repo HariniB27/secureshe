@@ -16,6 +16,10 @@ jwt = JWTManager()
 def create_app():
     app = Flask(__name__)
 
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+     }
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
@@ -35,7 +39,8 @@ def create_app():
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(complaints_bp, url_prefix='/api/complaints')
-
+    from app.routes.sos import sos_bp
+    app.register_blueprint(sos_bp)
     with app.app_context():
         db.create_all()
 

@@ -9,6 +9,8 @@ import 'screens/register_screen.dart';
 import 'screens/safety_map_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
+import 'screens/sos_screen.dart';
+import 'screens/trusted_contacts_screen.dart';
 
 void main() {
   runApp(
@@ -36,7 +38,8 @@ class SecureSheApp extends StatelessWidget {
         '/home': (context) => const PlaceholderScreen(title: 'Home'),
         '/complaint': (context) => const ComplaintScreen(),
         '/archive': (context) => const ArchiveLockScreen(),
-        '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
+        '/sos': (context) => const SosScreen(),
+        '/trusted-circle': (context) => const TrustedContactsScreen(),
         '/map': (context) => const SafetyMapScreen(),
       },
     );
