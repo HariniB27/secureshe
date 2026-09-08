@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 /// Change [baseUrl] to point at whichever backend you're demoing against
 /// (local dev server, a teammate's machine, staging, etc).
 class ApiService {
-  static const String baseUrl = 'http://127.0.0.1:5050';
+  static const String baseUrl = 'http://127.0.0.1:5000';
 
   static const _storage = FlutterSecureStorage();
   static const _accessTokenKey = 'access_token';

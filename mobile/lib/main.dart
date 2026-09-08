@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
+import 'screens/safety_map_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
@@ -34,7 +34,7 @@ class SecureSheApp extends StatelessWidget {
         '/complaint': (context) => const PlaceholderScreen(title: 'Complaint'),
         '/archive': (context) => const PlaceholderScreen(title: 'Archive'),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
-        '/map': (context) => const PlaceholderScreen(title: 'Map'),
+        '/map': (context) => const SafetyMapScreen(),
       },
     );
   }
