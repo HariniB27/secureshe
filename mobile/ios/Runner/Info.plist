@@ -34,6 +34,8 @@
 	<string>SecureShe uses Face ID to unlock your complaint archive.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>SecureShe needs photo library access to attach an existing photo as evidence to a complaint.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SecureShe uses your location to show safety scores for the area around you.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

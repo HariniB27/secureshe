@@ -6,6 +6,7 @@ import 'screens/complaint_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
+import 'screens/safety_map_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
 import 'screens/sos_screen.dart';
@@ -39,7 +40,7 @@ class SecureSheApp extends StatelessWidget {
         '/archive': (context) => const ArchiveLockScreen(),
         '/sos': (context) => const SosScreen(),
         '/trusted-circle': (context) => const TrustedContactsScreen(),
-        '/map': (context) => const PlaceholderScreen(title: 'Map'),
+        '/map': (context) => const SafetyMapScreen(),
       },
     );
   }
