@@ -62,18 +62,25 @@ class AuthState extends ChangeNotifier {
       return 'Cannot reach the server. Check your connection and try again.';
     }
 
-    if (response.statusCode == 200) {
+    try {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final user = data['user'] as Map<String, dynamic>;
-      _userName = user['name'] as String?;
-      _userEmail = user['email'] as String?;
-      _isLoggedIn = true;
-      notifyListeners();
-      return null;
-    }
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    return data['error'] as String? ?? 'Login failed';
+      if (response.statusCode == 200) {
+        final user = data['user'] as Map<String, dynamic>;
+        _userName = user['name'] as String?;
+        _userEmail = user['email'] as String?;
+        _isLoggedIn = true;
+        notifyListeners();
+        return null;
+      }
+
+      return data['error'] as String? ?? 'Login failed';
+    } catch (_) {
+      // The server responded, but not with the JSON we expect (e.g. a 500
+      // with an HTML error page) — surface a generic message instead of
+      // leaving the caller's loading state stuck on an uncaught exception.
+      return 'Something went wrong (server returned ${response.statusCode}). Please try again.';
+    }
   }
 
   Future<void> logout() async {
