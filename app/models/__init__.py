@@ -21,3 +21,10 @@ class Complaint(db.Model):
     status = db.Column(db.String(50), default='SUBMITTED')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+class TrustedContact(db.Model):
+    __tablename__ = "trusted_contacts"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    phone_number = db.Column(db.String(20), nullable=False)  # E.164 format e.g. +919876543210
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
