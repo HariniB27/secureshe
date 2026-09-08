@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app import db, bcrypt
 from app.models import User
-from flask_jwt_extended import create_access_token
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -43,12 +43,41 @@ def login():
         return jsonify({'error': 'Invalid credentials'}), 401
 
     access_token = create_access_token(identity=str(user.id))
+    refresh_token = create_refresh_token(identity=str(user.id))
 
     return jsonify({
         'access_token': access_token,
+        'refresh_token': refresh_token,
         'user': {
             'id': user.id,
             'name': user.name,
             'email': user.email
         }
     }), 200
+
+
+@auth_bp.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    """Silently mints a new access token from a still-valid refresh token, so the
+    mobile app never has to show a login screen again unless the refresh token itself expires."""
+    identity = get_jwt_identity()
+    new_access_token = create_access_token(identity=identity)
+    return jsonify({'access_token': new_access_token}), 200
+
+
+@auth_bp.route('/verify-password', methods=['POST'])
+@jwt_required()
+def verify_password():
+    """Re-checks the user's password without issuing a new token. Used to gate the
+    complaints archive screen even while the user is already signed in."""
+    data = request.get_json()
+    if not data or 'password' not in data:
+        return jsonify({'error': 'Missing password'}), 400
+
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or not bcrypt.check_password_hash(user.password, data['password']):
+        return jsonify({'verified': False}), 401
+
+    return jsonify({'verified': True}), 200

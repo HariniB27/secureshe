@@ -37,3 +37,8 @@ instance/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Hardhat / blockchain
+blockchain/node_modules/
+blockchain/cache/
+blockchain/artifacts/

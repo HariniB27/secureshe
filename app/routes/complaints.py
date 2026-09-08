@@ -6,6 +6,7 @@ import uuid
 import hashlib
 import os
 import requests
+from app.blockchain import log_complaint_on_chain
 
 complaints_bp = Blueprint('complaints', __name__)
 
@@ -33,6 +34,14 @@ def submit_complaint():
 
     description = request.form.get('description', '') if request.form else request.get_json(silent=True, force=True).get('description', '')
 
+    lat_raw = request.form.get('lat') if request.form else None
+    lng_raw = request.form.get('lng') if request.form else None
+    try:
+        latitude = float(lat_raw) if lat_raw not in (None, '') else None
+        longitude = float(lng_raw) if lng_raw not in (None, '') else None
+    except ValueError:
+        return jsonify({'error': 'lat/lng must be valid numbers'}), 400
+
     complaint_id = str(uuid.uuid4())[:8].upper()
     ipfs_cid = None
     evidence_hash = None
@@ -55,12 +64,23 @@ def submit_complaint():
         # No file — hash the description as a placeholder
         evidence_hash = hashlib.sha256(description.encode()).hexdigest()
 
+    blockchain_tx = None
+    try:
+        blockchain_tx = log_complaint_on_chain(complaint_id, evidence_hash)
+    except Exception as e:
+        # Don't fail the whole submission if the chain write fails — the complaint and its
+        # hash are still saved in the database below. Logged so it can be retried/backfilled.
+        print(f"[blockchain] failed to log complaint {complaint_id}: {e}")
+
     complaint = Complaint(
         complaint_id=complaint_id,
         user_id=user_id,
         description=description,
         evidence_hash=evidence_hash,
         ipfs_cid=ipfs_cid,
+        blockchain_tx=blockchain_tx,
+        latitude=latitude,
+        longitude=longitude,
         status='SUBMITTED'
     )
 
@@ -76,6 +96,12 @@ def submit_complaint():
     if ipfs_cid:
         response_data['ipfs_cid'] = ipfs_cid
         response_data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{ipfs_cid}'
+    if blockchain_tx:
+        response_data['blockchain_tx'] = blockchain_tx
+        response_data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{blockchain_tx}'
+    if latitude is not None or longitude is not None:
+        response_data['latitude'] = latitude
+        response_data['longitude'] = longitude
 
     return jsonify(response_data), 201
 
@@ -97,5 +123,8 @@ def get_status(complaint_id):
     if complaint.ipfs_cid:
         data['ipfs_cid'] = complaint.ipfs_cid
         data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{complaint.ipfs_cid}'
+    if complaint.blockchain_tx:
+        data['blockchain_tx'] = complaint.blockchain_tx
+        data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{complaint.blockchain_tx}'
 
     return jsonify(data), 200
