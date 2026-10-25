@@ -35,6 +35,18 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
   /// A new report this close to your route triggers a warning.
   static const _routeAlertMetres = 300.0;
 
+  /// A route must finish within this distance of the destination's nearest
+  /// road/path, or it is thrown away.
+  static const _endToleranceMetres = 75.0;
+
+  /// "Safest" may only pick a route that takes at most this much longer
+  /// than the quickest one. Stops it recommending a huge detour.
+  static const _maxDetourFactor = 1.5;
+
+  /// Shows a dashed "last stretch" line and a note when the road ends
+  /// further than this from the pin.
+  static const _showGapMetres = 40.0;
+
   final _mapController = MapController();
   final _routing = RoutingService();
   final _safety = SafetyApiService();
@@ -60,6 +72,15 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
   bool _loadingRoutes = false;
   bool _scoring = false;
   String? _error;
+
+  /// Where the routes actually finish (nearest road/path to the pin), and
+  /// how far that is from the pin.
+  LatLng? _routeEnd;
+  double _endGapMetres = 0;
+
+  /// Bumped on every new route search. Answers that come back for an older
+  /// search are ignored, so old scores can't be applied to new routes.
+  int _routeRequest = 0;
 
   LatLng? get _start => _customStart ?? _me;
 
@@ -192,31 +213,48 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
       return;
     }
 
+    final request = ++_routeRequest;
+
     setState(() {
       _loadingRoutes = true;
       _error = null;
       _routes = [];
+      _routeEnd = null;
+      _endGapMetres = 0;
     });
 
     try {
-      final routes =
+      final result =
           await _routing.getRoutes(start, destination.point, _mode);
-      if (!mounted) return;
+      if (!mounted || request != _routeRequest) return;
 
-      if (routes.isEmpty) throw Exception('No route found between these places.');
+      // Keep only routes that really finish at the destination. Every
+      // option is meant to end at the same place, so anything else is
+      // dropped rather than offered as "safer".
+      final valid = result.routes.where((route) {
+        return route.points.length >= 2 &&
+            _distance.distance(route.points.last, result.snappedEnd) <=
+                _endToleranceMetres;
+      }).toList();
+
+      if (valid.isEmpty) {
+        throw Exception('Could not find a route that reaches this place.');
+      }
 
       setState(() {
         // At most 3 options, which also keeps the safety check under the
         // backend's 200-point limit.
-        _routes = routes.take(3).toList();
-        _selected = 0;
+        _routes = valid.take(3).toList();
+        _selected = _fastestIndex;
+        _routeEnd = result.snappedEnd;
+        _endGapMetres = result.endSnapMetres;
         _loadingRoutes = false;
       });
 
       _fitRoutes();
       await _scoreRoutes();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || request != _routeRequest) return;
       setState(() {
         _loadingRoutes = false;
         _error = e.toString().replaceFirst('Exception: ', '');
@@ -226,18 +264,26 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
 
   /// Checks every route at evenly spaced points and picks the safest one.
   Future<void> _scoreRoutes() async {
-    if (_routes.isEmpty || _scoring) return;
+    if (_routes.isEmpty) return;
+
+    final request = _routeRequest;
+    final routes = _routes;
     setState(() => _scoring = true);
 
     final samples = <List<LatLng>>[
-      for (final route in _routes) _sample(route.points, _samplesPerRoute),
+      for (final route in routes) _sample(route.points, _samplesPerRoute),
     ];
 
     try {
       final results = await _safety.fetchScoresBatch(
         samples.expand((s) => s).toList(),
       );
-      if (!mounted) return;
+
+      // The trip changed while we were waiting: these scores are for the
+      // old routes, so don't apply them.
+      if (!mounted || request != _routeRequest || !identical(routes, _routes)) {
+        return;
+      }
 
       var offset = 0;
       for (var i = 0; i < _routes.length; i++) {
@@ -256,11 +302,13 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
       setState(() => _selected = _safestIndex ?? 0);
     } catch (e) {
       debugPrint('Route safety check failed: $e');
-      if (mounted) {
+      if (mounted && request == _routeRequest) {
         _snack('Could not check route safety. Showing routes without scores.');
       }
     } finally {
-      if (mounted) setState(() => _scoring = false);
+      if (mounted && request == _routeRequest) {
+        setState(() => _scoring = false);
+      }
     }
   }
 
@@ -272,7 +320,10 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
 
   void _fitRoutes() {
     if (!_mapReady || _routes.isEmpty) return;
-    final all = _routes.expand((r) => r.points).toList();
+    final all = [
+      ..._routes.expand((r) => r.points),
+      if (_destination != null) _destination!.point,
+    ];
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds.fromPoints(all),
@@ -281,15 +332,22 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     );
   }
 
-  /// Highest average safety. Routes within 2 points of each other count as
-  /// equally safe, and the quicker one wins.
+  /// Highest average safety among routes that aren't a big detour (at most
+  /// [_maxDetourFactor] times the quickest). Routes within 2 points of each
+  /// other count as equally safe, and the quicker one wins.
   int? get _safestIndex {
     if (_routes.isEmpty || _routes.any((r) => r.averageScore == null)) {
       return null;
     }
 
-    var best = 0;
-    for (var i = 1; i < _routes.length; i++) {
+    final fastest = _routes[_fastestIndex].durationSeconds;
+    final candidates = [
+      for (var i = 0; i < _routes.length; i++)
+        if (_routes[i].durationSeconds <= fastest * _maxDetourFactor) i,
+    ];
+
+    var best = candidates.first;
+    for (final i in candidates.skip(1)) {
       final diff = _routes[i].averageScore! - _routes[best].averageScore!;
       final quicker =
           _routes[i].durationSeconds < _routes[best].durationSeconds;
@@ -513,6 +571,22 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
       borderColor: Colors.white,
     ));
 
+    // The road/path ends short of the pin (e.g. inside a park or campus):
+    // show the last stretch as a dashed line so the route visibly reaches
+    // the place you picked.
+    final end = _routeEnd;
+    final destination = _destination;
+    if (end != null &&
+        destination != null &&
+        _endGapMetres > _showGapMetres) {
+      lines.add(Polyline(
+        points: [chosen.points.last, destination.point],
+        strokeWidth: 4,
+        color: color,
+        pattern: const StrokePattern.dashed(segments: [10, 8]),
+      ));
+    }
+
     return lines;
   }
 
@@ -576,10 +650,14 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
                         icon: const Icon(Icons.clear),
                         onPressed: () {
                           _searchController.clear();
+                          _routeRequest++;
                           setState(() {
                             _suggestions = [];
                             _destination = null;
                             _routes = [];
+                            _routeEnd = null;
+                            _scoring = false;
+                            _loadingRoutes = false;
                           });
                         },
                       ),
@@ -623,15 +701,26 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
           separatorBuilder: (_, __) => const Divider(height: 1),
           itemBuilder: (_, i) {
             final place = _suggestions[i];
+            final km = place.distanceKm;
             return ListTile(
               dense: true,
               leading: const Icon(Icons.place_outlined),
               title: Text(place.name),
+              // The full address, so two places with the same name can be
+              // told apart.
               subtitle: Text(
                 place.detail,
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+              trailing: km == null
+                  ? null
+                  : Text(
+                      km < 1
+                          ? '${(km * 1000).round()} m'
+                          : '${km.toStringAsFixed(km < 10 ? 1 : 0)} km',
+                      style: const TextStyle(fontSize: 12),
+                    ),
               onTap: () => _chooseDestination(place),
             );
           },
@@ -645,7 +734,7 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     final fastest = _fastestIndex;
 
     return SizedBox(
-      height: 150,
+      height: 170,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -725,6 +814,14 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
                         ),
                       ),
                   ],
+                  if (_endGapMetres > _showGapMetres)
+                    Text(
+                      'Last ${_endGapMetres.round()} m off-road to the pin',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
                 ],
               ),
             ),
