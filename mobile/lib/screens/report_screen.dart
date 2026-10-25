@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +14,7 @@ import '../services/routing_service.dart';
 import '../state/app_prefs.dart';
 import '../state/shell_controller.dart';
 import '../theme.dart';
+import '../utils/json_utils.dart';
 import '../widgets/ss_components.dart';
 import '../widgets/ss_ui.dart';
 import 'location_picker_screen.dart';
@@ -76,6 +76,16 @@ class _ReportScreenState extends State<ReportScreen> {
   final _details = TextEditingController();
   late bool _anonymous = context.read<AppPrefs>().anonymousReports;
 
+  /// "Where did this happen?" as typed. Sent as location_text; it never
+  /// moves the map pin by itself (see _findOnMap).
+  final _where = TextEditingController();
+  bool _searchingPlace = false;
+
+  /// The quick places from the design. They are labels only: OpenStreetMap
+  /// has several candidates for each of them on campus, so none can be
+  /// pinned to one verified coordinate and none carries one.
+  static const _quickPlaces = ['VIT Gate', 'Hostel Block A', 'Library', 'Parking Lot'];
+
   LatLng? _location;
   String? _locationSource; // gps | manual
   String _locationName = 'Finding your location…';
@@ -108,6 +118,7 @@ class _ReportScreenState extends State<ReportScreen> {
   void dispose() {
     _shell?.removeListener(_checkPendingEvidence);
     _details.dispose();
+    _where.dispose();
     super.dispose();
   }
 
@@ -184,6 +195,67 @@ class _ReportScreenState extends State<ReportScreen> {
       _locationName = 'Pinned location';
     });
     _nameLocation(picked);
+  }
+
+  /// Looks the typed place up and offers matches to pin. It only ever
+  /// proposes: the pin (and your GPS fix) changes when you pick a result,
+  /// never by itself.
+  Future<void> _findOnMap() async {
+    final query = _where.text.trim();
+    if (query.isEmpty) return;
+
+    setState(() => _searchingPlace = true);
+    try {
+      final results = await RoutingService().searchPlaces(query, near: _location);
+      if (!mounted) return;
+      if (results.isEmpty) {
+        _snack('No matching place found. Pick it on the map instead.');
+        return;
+      }
+
+      final picked = await showSSSheet<PlaceResult>(
+        context,
+        builder: (ctx) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SheetTitle(
+              title: 'Place the pin here?',
+              subtitle: 'Choose a match, or close this to keep your current pin.',
+            ),
+            for (final p in results.take(5))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SSCard(
+                  onTap: () => Navigator.of(ctx).pop(p),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(p.name,
+                          style: TextStyle(fontWeight: FontWeight.w600, color: ctx.ss.foreground)),
+                      const SizedBox(height: 2),
+                      Text(p.detail,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11, color: ctx.ss.mutedForeground)),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+
+      if (picked == null || !mounted) return;
+      setState(() {
+        _location = picked.point;
+        _locationSource = 'manual';
+        _locationName = picked.name;
+      });
+    } catch (_) {
+      if (mounted) _snack('Could not search for places right now.');
+    } finally {
+      if (mounted) setState(() => _searchingPlace = false);
+    }
   }
 
   Future<void> _nameLocation(LatLng point) async {
@@ -305,6 +377,7 @@ class _ReportScreenState extends State<ReportScreen> {
         lat: _location?.latitude,
         lng: _location?.longitude,
         locationSource: _locationSource,
+        locationText: _where.text,
         files: [
           for (final a in _attachments) (bytes: a.bytes, filename: a.filename),
         ],
@@ -312,21 +385,24 @@ class _ReportScreenState extends State<ReportScreen> {
 
       if (!mounted) return;
 
-      Map<String, dynamic> data = {};
-      try {
-        data = jsonDecode(response.body) as Map<String, dynamic>;
-      } catch (_) {}
+      // The body isn't always JSON (an HTML 500 page, a proxy message), so
+      // decoding is its own step and never throws.
+      final data = tryDecodeMap(response.body);
+      final id = data?['complaint_id'];
 
-      if (response.statusCode != 201) {
+      if (response.statusCode != 201 || id is! String) {
         setState(() {
           _submitting = false;
-          _error = data['error'] as String? ??
-              'Submission failed (server returned ${response.statusCode}).';
+          _error = response.statusCode == 201
+              ? 'Server error, try again.'
+              : errorMessage(
+                  response,
+                  fallback: 'Submission failed (server returned ${response.statusCode}).',
+                );
         });
         return;
       }
 
-      final id = data['complaint_id'] as String;
       await context.read<AppPrefs>().notify(
             type: 'info',
             title: 'Report submitted',
@@ -350,6 +426,7 @@ class _ReportScreenState extends State<ReportScreen> {
       _step = 1;
       _type = null;
       _details.clear();
+      _where.clear();
       _attachments.clear();
       _submitting = false;
       _error = null;
@@ -498,6 +575,78 @@ class _ReportScreenState extends State<ReportScreen> {
         _heading('Add Details', 'More information helps keep others safe'),
         Text('Location',
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: c.foreground)),
+        const SizedBox(height: 8),
+        SSCard(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          child: Row(
+            children: [
+              const Icon(Icons.place_outlined, size: 18, color: AppColors.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _where,
+                  maxLength: 200,
+                  maxLines: 1,
+                  textInputAction: TextInputAction.next,
+                  onChanged: (_) => setState(() {}),
+                  style: TextStyle(fontSize: 14, color: c.foreground),
+                  decoration: InputDecoration(
+                    hintText: 'Where did this happen?',
+                    hintStyle: TextStyle(color: c.mutedForeground),
+                    counterText: '',
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                  ),
+                ),
+              ),
+              if (_where.text.isNotEmpty)
+                IconButton(
+                  tooltip: 'Clear',
+                  icon: Icon(Icons.close_rounded, size: 18, color: c.mutedForeground),
+                  onPressed: () => setState(_where.clear),
+                )
+              else
+                IconButton(
+                  tooltip: 'Use my current location',
+                  icon: const Icon(Icons.my_location_rounded, size: 18, color: AppColors.primary),
+                  onPressed: _useCurrentLocation,
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (final place in _quickPlaces)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _Chip(
+                    icon: Icons.place_outlined,
+                    label: place,
+                    onTap: () => setState(() => _where.text = place),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (_where.text.trim().length >= 3) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _Chip(
+              icon: _searchingPlace ? Icons.hourglass_top_rounded : Icons.search_rounded,
+              label: 'Find this place on the map',
+              onTap: _searchingPlace ? () {} : _findOnMap,
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        Text('Map pin',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.mutedForeground)),
         const SizedBox(height: 8),
         SSCard(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
