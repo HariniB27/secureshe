@@ -266,22 +266,21 @@ def live_risk(lat, lng):
 
         weighted_count += contribution
 
+        # This list is returned by the PUBLIC /score and /scores/batch, so
+        # it carries no internal id and the same ~110 m rounding as
+        # /live-reports. Distance is rounded to 0.1 km and weight to 2
+        # places so repeated probes can't pin a report down any finer.
         matched_reports.append(
             {
-                "id": getattr(
-                    complaint,
-                    "id",
-                    None,
-                ),
-                "lat": complaint_lat,
-                "lng": complaint_lng,
+                "lat": round(float(complaint_lat), PUBLIC_COORD_DECIMALS),
+                "lng": round(float(complaint_lng), PUBLIC_COORD_DECIMALS),
                 "distance_km": round(
                     distance,
-                    3,
+                    1,
                 ),
                 "weight": round(
                     contribution,
-                    3,
+                    2,
                 ),
             }
         )
@@ -648,12 +647,13 @@ def get_safety_heatmap():
         else:
             risk = "very_high"
 
+        # PUBLIC endpoint: no internal id, coordinates rounded like
+        # /live-reports (~110 m), distance/weight coarsened.
         points.append({
-            "id": complaint.id,
-            "lat": lat,
-            "lng": lng,
-            "weight": round(weight, 3),
-            "distance_km": round(distance, 3),
+            "lat": round(lat, PUBLIC_COORD_DECIMALS),
+            "lng": round(lng, PUBLIC_COORD_DECIMALS),
+            "weight": round(weight, 2),
+            "distance_km": round(distance, 1),
             "risk": risk,
             "created_at": (
                 get_complaint_datetime(complaint).isoformat()
@@ -946,12 +946,15 @@ def get_live_reports():
     else:
         incremental = True
 
+    # Anonymous reports are never listed on the public map. (They still
+    # count in the score math, which only publishes a coarse location.)
     complaints = (
         Complaint.query
         .filter(
             Complaint.latitude.isnot(None),
             Complaint.longitude.isnot(None),
             Complaint.created_at > since,
+            Complaint.anonymous.isnot(True),
         )
         .order_by(Complaint.created_at.desc())
         .limit(LIVE_MAX_RESULTS)
