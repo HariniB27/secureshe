@@ -4,12 +4,20 @@ import 'dart:typed_data';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../config.dart';
+import '../utils/json_utils.dart';
+
 /// Thin wrapper around the SecureShe backend API.
 ///
-/// Change [baseUrl] to point at whichever backend you're demoing against
-/// (local dev server, a teammate's machine, staging, etc).
+/// The server address comes from [ApiConfig] (see lib/config.dart).
 class ApiService {
-  static const String baseUrl = 'http://127.0.0.1:5050';
+  static String get baseUrl => ApiConfig.baseUrl;
+
+  /// Called when a request is still rejected as "not logged in" after one
+  /// token refresh (the session is really over). main.dart points this at
+  /// "sign out and go to the login screen".
+  static void Function()? onSessionExpired;
+  static bool _expiring = false;
 
   static const _storage = FlutterSecureStorage();
   static const _accessTokenKey = 'access_token';
@@ -63,11 +71,12 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      await saveTokens(
-        accessToken: data['access_token'] as String,
-        refreshToken: data['refresh_token'] as String,
-      );
+      final data = tryDecodeMap(response.body);
+      final access = data?['access_token'];
+      final refresh = data?['refresh_token'];
+      if (access is String && refresh is String) {
+        await saveTokens(accessToken: access, refreshToken: refresh);
+      }
     }
 
     return response;
@@ -85,12 +94,11 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      await _storage.write(
-        key: _accessTokenKey,
-        value: data['access_token'] as String,
-      );
-      return true;
+      final access = tryDecodeMap(response.body)?['access_token'];
+      if (access is String) {
+        await _storage.write(key: _accessTokenKey, value: access);
+        return true;
+      }
     }
 
     return false;
@@ -118,6 +126,18 @@ class ApiService {
       }
     }
 
+    // Still "not logged in" after a refresh: the session is over. (Our own
+    // wrong-password answers are 401 too, but they carry `error`/`verified`,
+    // not the token check's `msg`, so they don't land here.)
+    if (isSessionExpiredResponse(response) && !_expiring) {
+      _expiring = true;
+      try {
+        onSessionExpired?.call();
+      } finally {
+        Future<void>.delayed(const Duration(seconds: 2), () => _expiring = false);
+      }
+    }
+
     return response;
   }
 
@@ -132,6 +152,10 @@ class ApiService {
     double? lat,
     double? lng,
     String? locationSource,
+    String? locationText,
+    String? category,
+    bool anonymous = false,
+    List<({Uint8List bytes, String filename})> files = const [],
   }) {
     return authedRequest((token) async {
       final request = http.MultipartRequest(
@@ -139,7 +163,13 @@ class ApiService {
         Uri.parse('$baseUrl/api/complaints/submit'),
       )
         ..headers['Authorization'] = 'Bearer $token'
-        ..fields['description'] = description;
+        ..fields['description'] = description
+        ..fields['anonymous'] = anonymous ? 'true' : 'false';
+
+      if (category != null) request.fields['category'] = category;
+      if (locationText != null && locationText.trim().isNotEmpty) {
+        request.fields['location_text'] = locationText.trim();
+      }
 
       if (lat != null && lng != null) {
         request.fields['lat'] = lat.toString();
@@ -156,6 +186,13 @@ class ApiService {
             evidenceBytes,
             filename: evidenceFilename ?? 'evidence',
           ),
+        );
+      }
+
+      // Up to 5 files, each sent as another "evidence" part.
+      for (final file in files) {
+        request.files.add(
+          http.MultipartFile.fromBytes('evidence', file.bytes, filename: file.filename),
         );
       }
 
@@ -203,4 +240,149 @@ class ApiService {
       }),
     );
   }
+
+  // ------------------------------------------------------------------
+  // Account (added for the redesign)
+  // ------------------------------------------------------------------
+
+  static Map<String, String> _jsonHeaders(String token) => {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      };
+
+  /// GET /api/auth/me — the signed-in user's profile.
+  static Future<http.Response> getMe() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// PUT /api/auth/me — update name and/or phone.
+  static Future<http.Response> updateMe({String? name, String? phone}) =>
+      authedRequest(
+        (token) => http.put(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({
+            'name': ?name,
+            'phone': ?phone,
+          }),
+        ),
+      );
+
+  /// POST /api/auth/change-password
+  static Future<http.Response> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/auth/change-password'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({
+            'current_password': currentPassword,
+            'new_password': newPassword,
+          }),
+        ),
+      );
+
+  /// DELETE /api/auth/me — permanently deletes the account.
+  static Future<http.Response> deleteAccount(String password) => authedRequest(
+        (token) => http.delete(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'password': password}),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Reports
+  // ------------------------------------------------------------------
+
+  /// GET /api/complaints/mine — your own reports, newest first.
+  static Future<http.Response> myComplaints() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/complaints/mine'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// `GET /api/complaints/status/<id>`: one of your reports.
+  static Future<http.Response> complaintStatus(String id) => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/complaints/status/$id'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// `POST /api/complaints/<id>/retry-chain`: owner-only; tries the
+  /// blockchain log again for a report whose log failed.
+  static Future<http.Response> retryChain(String id) => authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/complaints/$id/retry-chain'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Trusted circle and SOS (Sreshta's /api/sos endpoints)
+  // ------------------------------------------------------------------
+
+  static Future<http.Response> listContacts() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/sos/contacts'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  static Future<http.Response> addContact({
+    required String name,
+    required String phone,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/sos/contacts'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'name': name, 'phone_number': phone}),
+        ),
+      );
+
+  static Future<http.Response> deleteContact(int id) => authedRequest(
+        (token) => http.delete(
+          Uri.parse('$baseUrl/api/sos/contacts/$id'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  static Future<http.Response> triggerSos({
+    required double latitude,
+    required double longitude,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/sos/trigger'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Community flags
+  // ------------------------------------------------------------------
+
+  /// POST /api/safety/flags — kind is dark-street, harassment,
+  /// suspicious or safe-zone.
+  static Future<http.Response> addFlag({
+    required String kind,
+    required double lat,
+    required double lng,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/safety/flags'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'kind': kind, 'lat': lat, 'lng': lng}),
+        ),
+      );
 }

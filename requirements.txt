@@ -8,3 +8,5 @@ SQLAlchemy==2.0.50
 psycopg2-binary==2.9.12
 requests==2.32.3
 web3==6.20.1
+twilio==9.11.0
+Flask-Limiter==4.1.1

@@ -42,9 +42,15 @@ dependencies:
   url_launcher: ^6.3.2
   path_provider: ^2.1.6
   local_auth: ^3.0.2
+  telephony:
+    path: packages/telephony
+  connectivity_plus: ^6.0.0
+  shared_preferences: ^2.2.0
   flutter_map: ^8.3.2
   latlong2: ^0.10.1
   geolocator: ^14.0.3
+  google_fonts: ^6.2.1
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +73,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/images/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

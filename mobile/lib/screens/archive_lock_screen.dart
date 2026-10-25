@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 
 import '../services/api_service.dart';
-import 'placeholder_screen.dart';
+import 'my_reports_screen.dart';
 
 /// Gate in front of the complaint archive: tries biometrics first (when the
 /// device supports it), and always offers a password fallback via
@@ -101,7 +101,7 @@ class _ArchiveLockScreenState extends State<ArchiveLockScreen> {
   void _unlock() {
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const PlaceholderScreen(title: 'Archive')),
+      MaterialPageRoute(builder: (_) => const MyReportsScreen()),
     );
   }
 
