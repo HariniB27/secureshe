@@ -78,6 +78,11 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
   LatLng? _routeEnd;
   double _endGapMetres = 0;
 
+  /// From the last route check: whether it was scored for night-time, and
+  /// whether road/lighting data was available.
+  bool _night = false;
+  bool _environmentChecked = true;
+
   /// Bumped on every new route search. Answers that come back for an older
   /// search are ignored, so old scores can't be applied to new routes.
   int _routeRequest = 0;
@@ -224,17 +229,23 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     });
 
     try {
-      final result =
-          await _routing.getRoutes(start, destination.point, _mode);
+      final result = _mode == TravelMode.walk
+          ? await _routing.getWalkingRoutes(start, destination.point)
+          : await _routing.getRoutes(start, destination.point, _mode);
       if (!mounted || request != _routeRequest) return;
 
       // Keep only routes that really finish at the destination. Every
       // option is meant to end at the same place, so anything else is
-      // dropped rather than offered as "safer".
+      // dropped rather than offered as "safer". (Main-road walking options
+      // end at the nearest drivable road, so they get a little more slack.)
       final valid = result.routes.where((route) {
-        return route.points.length >= 2 &&
-            _distance.distance(route.points.last, result.snappedEnd) <=
-                _endToleranceMetres;
+        if (route.points.length < 2) return false;
+        final end = route.points.last;
+        return _distance.distance(end, result.snappedEnd) <=
+                _endToleranceMetres ||
+            (route.viaMainRoads &&
+                _distance.distance(end, destination.point) <=
+                    _endToleranceMetres * 2);
       }).toList();
 
       if (valid.isEmpty) {
@@ -242,9 +253,8 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
       }
 
       setState(() {
-        // At most 3 options, which also keeps the safety check under the
-        // backend's 200-point limit.
-        _routes = valid.take(3).toList();
+        // At most 4 options (the backend checks up to 5).
+        _routes = valid.take(4).toList();
         _selected = _fastestIndex;
         _routeEnd = result.snappedEnd;
         _endGapMetres = result.endSnapMetres;
@@ -262,7 +272,9 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     }
   }
 
-  /// Checks every route at evenly spaced points and picks the safest one.
+  /// Scores every route on crime reports, road type and lighting, then
+  /// pre-selects the safest. Falls back to crime-only scoring if the route
+  /// check isn't available.
   Future<void> _scoreRoutes() async {
     if (_routes.isEmpty) return;
 
@@ -270,6 +282,48 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     final routes = _routes;
     setState(() => _scoring = true);
 
+    bool stale() =>
+        !mounted || request != _routeRequest || !identical(routes, _routes);
+
+    try {
+      final check = await _safety.checkRoutes(
+        routes: [for (final r in routes) _sample(r.points, 30)],
+        distancesMetres: [for (final r in routes) r.distanceMetres],
+      );
+      if (stale()) return;
+
+      for (var i = 0; i < routes.length; i++) {
+        final s = check.routes[i];
+        routes[i]
+          ..averageScore = s.score
+          ..lowestScore = s.lowestCrimeScore
+          ..mainRoadPct = s.mainRoadPct
+          ..isolatedPct = s.isolatedPct
+          ..litPct = s.litPct
+          ..warnings = s.warnings;
+      }
+
+      setState(() {
+        _night = check.night;
+        _environmentChecked = check.environmentChecked;
+        _selected = _safestIndex ?? 0;
+      });
+    } catch (e) {
+      debugPrint('Route check failed, using crime-only scores: $e');
+      if (stale()) return;
+      await _scoreRoutesCrimeOnly(request, routes);
+    } finally {
+      if (mounted && request == _routeRequest) {
+        setState(() => _scoring = false);
+      }
+    }
+  }
+
+  /// Older scoring: crime data only, sampled along each route.
+  Future<void> _scoreRoutesCrimeOnly(
+    int request,
+    List<RouteOption> routes,
+  ) async {
     final samples = <List<LatLng>>[
       for (final route in routes) _sample(route.points, _samplesPerRoute),
     ];
@@ -278,36 +332,31 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
       final results = await _safety.fetchScoresBatch(
         samples.expand((s) => s).toList(),
       );
-
-      // The trip changed while we were waiting: these scores are for the
-      // old routes, so don't apply them.
       if (!mounted || request != _routeRequest || !identical(routes, _routes)) {
         return;
       }
 
       var offset = 0;
-      for (var i = 0; i < _routes.length; i++) {
+      for (var i = 0; i < routes.length; i++) {
         final scores = results
             .sublist(offset, offset + samples[i].length)
             .map((r) => r.score)
             .toList();
         offset += samples[i].length;
 
-        _routes[i].averageScore =
+        routes[i].averageScore =
             (scores.reduce((a, b) => a + b) / scores.length).round();
-        _routes[i].lowestScore = scores.reduce(math.min);
+        routes[i].lowestScore = scores.reduce(math.min);
       }
 
-      // Pre-select the safest route.
-      setState(() => _selected = _safestIndex ?? 0);
+      setState(() {
+        _environmentChecked = false;
+        _selected = _safestIndex ?? 0;
+      });
     } catch (e) {
       debugPrint('Route safety check failed: $e');
       if (mounted && request == _routeRequest) {
         _snack('Could not check route safety. Showing routes without scores.');
-      }
-    } finally {
-      if (mounted && request == _routeRequest) {
-        setState(() => _scoring = false);
       }
     }
   }
@@ -327,7 +376,7 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds.fromPoints(all),
-        padding: const EdgeInsets.fromLTRB(40, 200, 40, 220),
+        padding: const EdgeInsets.fromLTRB(40, 200, 40, 270),
       ),
     );
   }
@@ -732,101 +781,157 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
   Widget _routeCards() {
     final safest = _safestIndex;
     final fastest = _fastestIndex;
+    final scored = _routes.any((r) => r.averageScore != null);
 
-    return SizedBox(
-      height: 170,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: _routes.length,
-        itemBuilder: (_, i) {
-          final route = _routes[i];
-          final selected = i == _selected;
-          final score = route.averageScore;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (scored)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: _scoreBasisPill(),
+          ),
+        SizedBox(
+          height: 205,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: _routes.length,
+            itemBuilder: (_, i) => _routeCard(i, safest, fastest),
+          ),
+        ),
+      ],
+    );
+  }
 
-          return GestureDetector(
-            onTap: () => setState(() => _selected = i),
-            child: Container(
-              width: 230,
-              margin: const EdgeInsets.only(right: 10),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: selected
-                      ? (score == null ? Colors.blue : scoreColor(score))
-                      : Colors.transparent,
-                  width: 3,
-                ),
-                boxShadow: const [
-                  BoxShadow(blurRadius: 8, color: Colors.black26),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    spacing: 6,
-                    children: [
-                      if (safest == i) _tag('Safest', Colors.green.shade700),
-                      if (fastest == i) _tag('Fastest', Colors.blue.shade700),
-                      if (safest != i && fastest != i)
-                        _tag('Option ${i + 1}', Colors.grey.shade700),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${route.durationMinutes.round()} min · '
-                    '${route.distanceKm.toStringAsFixed(1)} km',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  if (score == null)
-                    Text(
-                      _scoring ? 'Checking safety…' : 'Safety not checked',
-                      style: TextStyle(color: Colors.grey.shade700),
-                    )
-                  else ...[
-                    Row(
-                      children: [
-                        Icon(Icons.shield, size: 18, color: scoreColor(score)),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Safety $score/100 · ${scoreLabel(score)}',
-                          style: TextStyle(
-                            color: scoreColor(score),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (route.lowestScore != null &&
-                        route.lowestScore! < 40)
-                      Text(
-                        'Passes a high-risk stretch (${route.lowestScore})',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.red.shade700,
-                        ),
-                      ),
-                  ],
-                  if (_endGapMetres > _showGapMetres)
-                    Text(
-                      'Last ${_endGapMetres.round()} m off-road to the pin',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                ],
-              ),
+  Widget _scoreBasisPill() {
+    final text = !_environmentChecked
+        ? 'Based on reports only (road & lighting data unavailable)'
+        : _night
+            ? 'Rated for night: lighting and quiet stretches count more'
+            : 'Rated on reports, road type and lighting';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black26)],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _night ? Icons.nightlight_round : Icons.info_outline,
+            size: 14,
+            color: Colors.grey.shade800,
+          ),
+          const SizedBox(width: 6),
+          Flexible(child: Text(text, style: const TextStyle(fontSize: 12))),
+        ],
+      ),
+    );
+  }
+
+  Widget _routeCard(int i, int? safest, int fastest) {
+    final route = _routes[i];
+    final selected = i == _selected;
+    final score = route.averageScore;
+
+    final details = <String>[
+      if (route.mainRoadPct != null) 'Main roads ${route.mainRoadPct}%',
+      if (route.litPct != null && route.litPct! > 0) 'Lit ${route.litPct}%',
+    ];
+
+    return GestureDetector(
+      onTap: () => setState(() => _selected = i),
+      child: Container(
+        width: 250,
+        margin: const EdgeInsets.only(right: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected
+                ? (score == null ? Colors.blue : scoreColor(score))
+                : Colors.transparent,
+            width: 3,
+          ),
+          boxShadow: const [BoxShadow(blurRadius: 8, color: Colors.black26)],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                if (safest == i) _tag('Safest', Colors.green.shade700),
+                if (fastest == i) _tag('Fastest', Colors.blue.shade700),
+                if (route.viaMainRoads)
+                  _tag('Main roads', Colors.indigo.shade600),
+                if (safest != i && fastest != i && !route.viaMainRoads)
+                  _tag('Option ${i + 1}', Colors.grey.shade700),
+              ],
             ),
-          );
-        },
+            const SizedBox(height: 8),
+            Text(
+              '${route.durationMinutes.round()} min · '
+              '${route.distanceKm.toStringAsFixed(1)} km',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+            if (details.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  details.join(' · '),
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ),
+            const Spacer(),
+            if (score == null)
+              Text(
+                _scoring ? 'Checking safety…' : 'Safety not checked',
+                style: TextStyle(color: Colors.grey.shade700),
+              )
+            else ...[
+              Row(
+                children: [
+                  Icon(Icons.shield, size: 18, color: scoreColor(score)),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Safety $score/100 · ${scoreLabel(score)}',
+                    style: TextStyle(
+                      color: scoreColor(score),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              for (final warning in route.warnings.take(2))
+                Text(
+                  warning,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                ),
+              if (route.warnings.isEmpty &&
+                  route.lowestScore != null &&
+                  route.lowestScore! < 40)
+                Text(
+                  'Passes an area with recent reports',
+                  style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                ),
+            ],
+            if (_endGapMetres > _showGapMetres)
+              Text(
+                'Last ${_endGapMetres.round()} m off-road to the pin',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+          ],
+        ),
       ),
     );
   }

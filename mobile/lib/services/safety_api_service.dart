@@ -193,6 +193,47 @@ class SafetyApiService {
         .toList();
   }
 
+  /// Scores whole routes on crime, road type and lighting.
+  /// [routes] are lists of evenly spaced points along each route.
+  Future<RouteCheckResult> checkRoutes({
+    required List<List<LatLng>> routes,
+    required List<double> distancesMetres,
+  }) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/route-check'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'hour': DateTime.now().hour,
+            'routes': [
+              for (var i = 0; i < routes.length; i++)
+                {
+                  'points': [
+                    for (final p in routes[i]) [p.latitude, p.longitude],
+                  ],
+                  'distance_m': distancesMetres[i],
+                },
+            ],
+          }),
+        )
+        // Road data can take a few seconds the first time.
+        .timeout(const Duration(seconds: 40));
+
+    if (response.statusCode != 200) {
+      throw Exception('Route check failed: ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    return RouteCheckResult(
+      night: data['night'] == true,
+      environmentChecked: data['environment_checked'] == true,
+      routes: (data['results'] as List)
+          .map((r) => RouteSafety.fromJson(Map<String, dynamic>.from(r as Map)))
+          .toList(),
+    );
+  }
+
   /// Recent complaint locations for the live map layer.
   ///
   /// Pass the [LiveReportsPage.serverTime] from the previous call as
@@ -332,6 +373,53 @@ class CrimeMapPoint {
       weight: (json['weight'] as num).toDouble(),
       year: (json['year'] as num).toInt(),
       totalCrimes: (json['total_crimes'] as num).toInt(),
+    );
+  }
+}
+
+class RouteCheckResult {
+  RouteCheckResult({
+    required this.night,
+    required this.environmentChecked,
+    required this.routes,
+  });
+
+  final bool night;
+
+  /// False when road/lighting data couldn't be fetched; scores are then
+  /// based on crime data only.
+  final bool environmentChecked;
+  final List<RouteSafety> routes;
+}
+
+class RouteSafety {
+  RouteSafety({
+    required this.score,
+    required this.lowestCrimeScore,
+    required this.warnings,
+    this.mainRoadPct,
+    this.isolatedPct,
+    this.litPct,
+  });
+
+  final int score;
+  final int lowestCrimeScore;
+  final List<String> warnings;
+  final int? mainRoadPct;
+  final int? isolatedPct;
+  final int? litPct;
+
+  factory RouteSafety.fromJson(Map<String, dynamic> json) {
+    return RouteSafety(
+      score: (json['score'] as num).toInt(),
+      lowestCrimeScore:
+          (json['lowest_crime_score'] as num?)?.toInt() ?? 100,
+      warnings: [
+        for (final w in (json['warnings'] as List? ?? const [])) w.toString(),
+      ],
+      mainRoadPct: (json['main_road_pct'] as num?)?.toInt(),
+      isolatedPct: (json['isolated_pct'] as num?)?.toInt(),
+      litPct: (json['lit_pct'] as num?)?.toInt(),
     );
   }
 }

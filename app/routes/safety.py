@@ -1040,3 +1040,153 @@ def get_historical_crime_points():
         "features": features,
         "max_total_crimes": max_total,
     })
+
+
+# ============================================================
+# POST /api/safety/route-check
+# ============================================================
+#
+# Scores whole routes, not just points. A route is judged on:
+#   * crime: complaints and district data along it (score_point)
+#   * environment: how much of it is on main roads vs. isolated
+#     tracks, and how much is lit (OpenStreetMap). After dark,
+#     lighting and isolation count for more than the crime data.
+#
+# Body:
+#   {
+#     "routes": [ {"points": [[lat, lng], ...]}, ... ],   up to 5
+#     "hour": 21        local hour on the phone (0-23), optional
+#   }
+#
+# Each route's points should be spread evenly along it (the app
+# sends ~30). Response has one result per route, same order.
+
+ROUTE_CHECK_MAX_ROUTES = 5
+ROUTE_CHECK_MAX_POINTS = 60
+ROUTE_CHECK_CRIME_SAMPLES = 12
+
+
+def _route_warnings(summary, distance_m, night):
+    warnings = []
+
+    if summary is None:
+        return warnings
+
+    def km(share):
+        return share * distance_m / 1000.0
+
+    isolated_km = km(summary["isolated_share"])
+    if isolated_km >= 0.3:
+        warnings.append(
+            f"About {isolated_km:.1f} km on tracks, paths or quiet back roads"
+        )
+
+    if night:
+        dark_km = km(summary["unlit_share"])
+        if dark_km >= 0.2:
+            warnings.append(f"About {dark_km:.1f} km marked as unlit")
+        elif summary["lighting"] < 0.4:
+            warnings.append("Much of this route is likely poorly lit")
+
+    return warnings
+
+
+@safety_bp.route("/route-check", methods=["POST"])
+def route_check():
+    from app import route_environment as env
+
+    body = request.get_json(silent=True) or {}
+    raw_routes = body.get("routes")
+
+    if not isinstance(raw_routes, list) or not raw_routes:
+        return jsonify({"error": "routes must be a non-empty list"}), 400
+
+    if len(raw_routes) > ROUTE_CHECK_MAX_ROUTES:
+        return jsonify({
+            "error": f"At most {ROUTE_CHECK_MAX_ROUTES} routes per request"
+        }), 400
+
+    hour = body.get("hour")
+    try:
+        hour = None if hour is None else int(hour) % 24
+    except (TypeError, ValueError):
+        hour = None
+
+    night = env.is_night(hour)
+
+    routes = []
+    for raw in raw_routes:
+        try:
+            pts = [
+                (float(p[0]), float(p[1]))
+                for p in (raw.get("points") or [])
+            ][:ROUTE_CHECK_MAX_POINTS]
+            distance_m = float(raw.get("distance_m") or 0)
+        except (TypeError, ValueError, IndexError, AttributeError):
+            return jsonify({"error": "Each point must be [lat, lng]"}), 400
+
+        if len(pts) < 2:
+            return jsonify({"error": "Each route needs at least 2 points"}), 400
+
+        routes.append((pts, distance_m))
+
+    # One Overpass request for all routes together.
+    environment_checked = True
+    try:
+        all_points = [p for pts, _ in routes for p in pts]
+        roads = env.fetch_roads(all_points)
+    except Exception as exc:  # network, rate limit, bad response
+        print(f"route-check: road data unavailable: {exc}")
+        roads = None
+        environment_checked = False
+
+    results = []
+    for pts, distance_m in routes:
+        # Crime: evenly spaced subset of the points.
+        step = max(1, len(pts) // ROUTE_CHECK_CRIME_SAMPLES)
+        crime_scores = [
+            score_point(lat, lng)["safety_score"] for lat, lng in pts[::step]
+        ]
+        crime = round(sum(crime_scores) / len(crime_scores))
+        crime_low = min(crime_scores)
+
+        summary = env.describe_route(pts, roads) if roads is not None else None
+        environment = env.environment_score(summary, hour)
+
+        if environment is None:
+            overall = crime
+        elif night:
+            overall = round(0.45 * crime + 0.55 * environment)
+        else:
+            overall = round(0.6 * crime + 0.4 * environment)
+
+        # One very bad stretch shouldn't be averaged away, and no amount of
+        # "no reports" can make an empty, dark track look safe.
+        overall = min(overall, crime_low + 30)
+        if environment is not None:
+            overall = min(overall, environment + (25 if night else 40))
+
+        result = {
+            "score": overall,
+            "band": safety_band(overall),
+            "crime_score": crime,
+            "lowest_crime_score": crime_low,
+            "environment_score": environment,
+            "warnings": _route_warnings(summary, distance_m, night),
+        }
+
+        if summary is not None:
+            result.update({
+                "main_road_pct": round(100 * summary["main_road_share"]),
+                "isolated_pct": round(100 * summary["isolated_share"]),
+                "lit_pct": round(100 * summary["lit_share"]),
+                "unlit_pct": round(100 * summary["unlit_share"]),
+            })
+
+        results.append(result)
+
+    return jsonify({
+        "results": results,
+        "night": night,
+        "environment_checked": environment_checked,
+    })

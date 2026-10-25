@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -58,6 +59,18 @@ class RouteOption {
   /// Filled in after the route is checked against the safety API.
   int? averageScore;
   int? lowestScore;
+
+  /// From /route-check: share of the route on main roads, on isolated
+  /// tracks/paths, and tagged as lit. Null if road data wasn't available.
+  int? mainRoadPct;
+  int? isolatedPct;
+  int? litPct;
+  List<String> warnings = const [];
+
+  /// True for a walking option that follows the main roads (built from the
+  /// driving route), offered because the walking router's own pick can go
+  /// through fields and back paths.
+  bool viaMainRoads = false;
 
   double get distanceKm => distanceMetres / 1000;
   double get durationMinutes => durationSeconds / 60;
@@ -199,5 +212,68 @@ class RoutingService {
           ? ((waypoints[1]['distance'] as num?)?.toDouble() ?? 0)
           : 0,
     );
+  }
+
+  /// Walking options: the walking router's own routes plus the driving
+  /// routes walked on foot.
+  ///
+  /// The walking router picks the shortest path even if it's a lonely track
+  /// across fields, and often returns just one route. Driving routes stay on
+  /// proper roads, so they give a main-road alternative to compare against.
+  Future<RouteSearchResult> getWalkingRoutes(LatLng from, LatLng to) async {
+    final foot = await getRoutes(from, to, TravelMode.walk);
+
+    RouteSearchResult? car;
+    try {
+      car = await getRoutes(from, to, TravelMode.drive);
+    } catch (_) {
+      // The walking routes alone are still usable.
+    }
+
+    final routes = <RouteOption>[...foot.routes];
+
+    for (final route in car?.routes ?? const <RouteOption>[]) {
+      // Driving routes can include one-way detours and roads closed to
+      // walkers (expressways). Skip anything that is a big detour.
+      final shortestFoot = foot.routes.isEmpty
+          ? double.infinity
+          : foot.routes.map((r) => r.distanceMetres).reduce(math.min);
+      if (route.distanceMetres > shortestFoot * 1.6) continue;
+
+      final walking = RouteOption(
+        points: route.points,
+        distanceMetres: route.distanceMetres,
+        // About 4.5 km/h.
+        durationSeconds: route.distanceMetres / 1.25,
+      )..viaMainRoads = true;
+
+      if (!routes.any((r) => _similar(r, walking))) routes.add(walking);
+    }
+
+    return RouteSearchResult(
+      routes: routes,
+      snappedStart: foot.snappedStart,
+      snappedEnd: foot.snappedEnd,
+      endSnapMetres: foot.endSnapMetres,
+    );
+  }
+
+  /// Two routes are "the same" if most of one runs within 60 m of the other.
+  static bool _similar(RouteOption a, RouteOption b) {
+    const distance = Distance();
+    final samples = _evenly(a.points, 15);
+    final others = _evenly(b.points, 80);
+
+    final close = samples.where((p) {
+      return others.any((q) => distance.distance(p, q) < 60);
+    }).length;
+
+    return close >= samples.length * 0.85;
+  }
+
+  static List<LatLng> _evenly(List<LatLng> points, int count) {
+    if (points.length <= count) return points;
+    final step = (points.length - 1) / (count - 1);
+    return [for (var i = 0; i < count; i++) points[(i * step).round()]];
   }
 }
