@@ -112,15 +112,31 @@ class _SafeRouteScreenState extends State<SafeRouteScreen>
 
     setState(() => _locationProblem = null);
     await _positionSub?.cancel();
-    _positionSub = LocationService.positionStream().listen((position) {
-      if (!mounted) return;
-      final firstFix = _me == null;
-      final here = LatLng(position.latitude, position.longitude);
-      setState(() => _me = here);
-      if (firstFix && _mapReady && _routes.isEmpty) {
-        _mapController.move(here, 15);
-      }
+    _positionSub = LocationService.positionStream().listen(_onPosition);
+
+    // Quick first position so you don't wait for a precise GPS lock.
+    final quick = await LocationService.quickFix();
+    if (!mounted) return;
+
+    if (quick != null) {
+      if (_me == null) _onPosition(quick);
+    } else if (_me == null) {
+      setState(() => _locationProblem =
+          'Still looking for your location. Long-press the map to choose a start point.');
+    }
+  }
+
+  void _onPosition(Position position) {
+    if (!mounted) return;
+    final firstFix = _me == null;
+    final here = LatLng(position.latitude, position.longitude);
+    setState(() {
+      _me = here;
+      _locationProblem = null;
     });
+    if (firstFix && _mapReady && _routes.isEmpty) {
+      _mapController.move(here, 15);
+    }
   }
 
   // ------------------------------------------------------------------

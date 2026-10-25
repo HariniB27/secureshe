@@ -184,6 +184,8 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
 
     setState(() => _locationProblem = null);
 
+    // Start the live stream, and in parallel grab a quick first position so
+    // the map jumps to you straight away.
     await _positionSub?.cancel();
     _positionSub = LocationService.positionStream().listen(
       _onPosition,
@@ -192,6 +194,17 @@ class _SafetyMapScreenState extends State<SafetyMapScreen>
         setState(() => _locationProblem = 'Lost GPS signal. Retrying…');
       },
     );
+
+    final quick = await LocationService.quickFix();
+    if (!mounted) return;
+
+    if (quick != null) {
+      if (_me == null) _onPosition(quick);
+    } else if (_me == null) {
+      setState(() => _locationProblem =
+          'Still looking for your location. On a simulator, set one in '
+          'Features → Location.');
+    }
   }
 
   void _onPosition(Position position) {

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 class LocationService {
@@ -25,6 +26,33 @@ class LocationService {
     }
 
     return null;
+  }
+
+  /// A position as fast as possible, so the map doesn't sit waiting for a
+  /// precise GPS lock: the phone's last known position first (instant), then
+  /// a quick medium-accuracy fix. The live stream sharpens it afterwards.
+  ///
+  /// Returns null if nothing arrives within [timeLimit].
+  static Future<Position?> quickFix({
+    Duration timeLimit = const Duration(seconds: 8),
+  }) async {
+    if (!kIsWeb) {
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) return last;
+      } catch (_) {}
+    }
+
+    try {
+      return await Geolocator.getCurrentPosition(
+        locationSettings: LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: timeLimit,
+        ),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Live position updates, sent whenever you move about 10 metres.
