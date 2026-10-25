@@ -1,5 +1,7 @@
 package com.secureshe.mobile
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+// FlutterFragmentActivity (not FlutterActivity) is required by local_auth for
+// biometric prompts on Android.
+class MainActivity : FlutterFragmentActivity()

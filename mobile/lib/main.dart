@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'screens/safety_map_screen.dart';
+
+import 'screens/archive_lock_screen.dart';
+import 'screens/complaint_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/placeholder_screen.dart';
 import 'screens/register_screen.dart';
+import 'screens/safety_map_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
 import 'screens/home_screen.dart';
@@ -35,8 +38,8 @@ class SecureSheApp extends StatelessWidget {
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
         '/home': (context) => const HomeScreen(),
-        '/complaint': (context) => const PlaceholderScreen(title: 'Complaint'),
-        '/archive': (context) => const PlaceholderScreen(title: 'Archive'),
+        '/complaint': (context) => const ComplaintScreen(),
+        '/archive': (context) => const ArchiveLockScreen(),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
         '/map': (context) => const SafetyMapScreen(),
         '/safe-route': (context) => const SafeRouteScreen(),
