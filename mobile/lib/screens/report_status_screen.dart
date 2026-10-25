@@ -1,14 +1,16 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/report.dart';
 import '../services/api_service.dart';
 import '../services/routing_service.dart';
 import '../theme.dart';
+import '../utils/json_utils.dart';
 import '../widgets/ss_components.dart';
 import '../widgets/ss_ui.dart';
 
@@ -27,14 +29,15 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
   String? _placeName;
   bool _loading = true;
   String? _error;
+  bool _retrying = false;
+  Timer? _poll;
+  int _polls = 0;
 
-  static const _steps = [
-    ('Report Submitted', 'Your report has been received'),
-    ('Under Review', 'Our team is reviewing your report'),
-    ('Investigation Started', 'Active investigation underway'),
-    ('Action Taken', 'Appropriate action is being taken'),
-    ('Resolved', 'Issue has been resolved'),
-  ];
+  // The blockchain write finishes a little after the report is saved, so
+  // while something is still waiting we re-check every few seconds (for a
+  // few minutes at most) instead of making the person pull to refresh.
+  static const _pollEvery = Duration(seconds: 6);
+  static const _maxPolls = 50;
 
   @override
   void initState() {
@@ -42,30 +45,56 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
     _load();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  bool _waitingOnChain(Report r) =>
+      r.chainStatus == 'pending' || (r.chainConfirmed && r.statusOnChain != r.status);
+
+  void _schedulePoll() {
+    _poll?.cancel();
+    final r = _report;
+    if (r == null || !_waitingOnChain(r) || _polls >= _maxPolls) return;
+    _poll = Timer(_pollEvery, () {
+      _polls++;
+      if (mounted) _load(silent: true);
     });
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final response = await ApiService.complaintStatus(widget.complaintId);
       if (!mounted) return;
-      if (response.statusCode != 200) {
+      final data = response.statusCode == 200 ? tryDecodeMap(response.body) : null;
+      if (data == null) {
+        if (silent) return _schedulePoll();
         setState(() {
           _loading = false;
           _error = response.statusCode == 404
               ? 'Report not found.'
-              : 'Could not load this report (${response.statusCode}).';
+              : errorMessage(response,
+                  fallback: 'Could not load this report (${response.statusCode}).');
         });
         return;
       }
-      final report = Report.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+      final report = Report.fromJson(data);
       setState(() {
         _report = report;
         _loading = false;
+        _error = null;
       });
+      _schedulePoll();
 
-      if (report.latitude != null && report.longitude != null) {
+      if (_placeName == null && report.latitude != null && report.longitude != null) {
         final name = await RoutingService().placeName(
           LatLng(report.latitude!, report.longitude!),
         );
@@ -73,10 +102,58 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
       }
     } catch (_) {
       if (!mounted) return;
+      if (silent) return _schedulePoll();
       setState(() {
         _loading = false;
         _error = 'Cannot reach the server. Pull down to try again.';
       });
+    }
+  }
+
+  Future<void> _retryChain() async {
+    setState(() => _retrying = true);
+    try {
+      final response = await ApiService.retryChain(widget.complaintId);
+      if (!mounted) return;
+      // 202 = started again; 409 = it is already confirmed / being confirmed.
+      if (response.statusCode != 202 && response.statusCode != 409) {
+        _snack(errorMessage(response, fallback: 'Could not retry. Try again in a moment.'));
+      }
+      _polls = 0;
+      await _load(silent: true);
+    } catch (_) {
+      if (mounted) _snack('Cannot reach the server. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => _retrying = false);
+    }
+  }
+
+  void _snack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _share(BuildContext buttonContext, Report r) async {
+    final chain = r.etherscanUrl ??
+        (r.chainFailed ? 'not recorded yet' : 'being confirmed');
+    final text = [
+      'SecureShe report ${r.id}',
+      if (r.evidenceHash != null) 'Evidence hash (SHA-256): ${r.evidenceHash}',
+      'Blockchain: $chain',
+    ].join('\n');
+
+    // iPads need to know where to anchor the share sheet.
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          text: text,
+          subject: 'SecureShe report ${r.id}',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (mounted) _snack('Could not open the share sheet.');
     }
   }
 
@@ -255,11 +332,18 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
               _row('Type', r.categoryLabel),
               _row(
                 'Location',
-                r.latitude == null
-                    ? 'Not given'
-                    : (_placeName ??
-                        '${r.latitude!.toStringAsFixed(4)}, ${r.longitude!.toStringAsFixed(4)}'),
+                r.locationText ??
+                    (r.latitude == null
+                        ? 'Not given'
+                        : (_placeName ??
+                            '${r.latitude!.toStringAsFixed(4)}, ${r.longitude!.toStringAsFixed(4)}')),
               ),
+              if (r.locationText != null && r.latitude != null)
+                _row(
+                  'Map pin',
+                  _placeName ??
+                      '${r.latitude!.toStringAsFixed(4)}, ${r.longitude!.toStringAsFixed(4)}',
+                ),
               _row('Submitted', formatDateTime(r.createdAt)),
               _row('Anonymous', r.anonymous ? 'Yes' : 'No'),
               _row('Evidence', r.evidence.isEmpty ? 'None' : '${r.evidence.length} file(s)'),
@@ -280,10 +364,10 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
         const SizedBox(height: 16),
         TimelineList(
           entries: [
-            for (var i = 0; i < _steps.length; i++)
+            for (var i = 0; i < r.statusFlow.length; i++)
               TimelineEntry(
-                title: _steps[i].$1,
-                subtitle: _steps[i].$2,
+                title: Report.stepTitle(r.statusFlow[i]),
+                subtitle: Report.stepDescription(r.statusFlow[i]),
                 trailing: i == 0
                     ? _short(r.createdAt)
                     : (i == current && i > 0 ? _short(r.updatedAt) : (i > current ? 'Pending' : null)),
@@ -311,25 +395,21 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: GradientButton(
-                label: 'Blockchain',
-                icon: Icons.open_in_new_rounded,
-                variant: SSButtonVariant.outline,
-                height: 50,
-                fontSize: 13,
-                onPressed: r.etherscanUrl == null ? null : () => _open(r.etherscanUrl!),
+              child: Builder(
+                builder: (buttonContext) => GradientButton(
+                  label: 'Share',
+                  icon: Icons.ios_share_rounded,
+                  variant: SSButtonVariant.outline,
+                  height: 50,
+                  fontSize: 13,
+                  onPressed: () => _share(buttonContext, r),
+                ),
               ),
             ),
           ],
         ),
-        if (r.etherscanUrl == null) ...[
-          const SizedBox(height: 8),
-          Text(
-            'Blockchain logging did not complete for this report. The report '
-            'and evidence are still saved.',
-            style: TextStyle(fontSize: 11, color: c.mutedForeground),
-          ),
-        ],
+        const SizedBox(height: 20),
+        _chainCard(r),
         const SizedBox(height: 20),
         Container(
           padding: const EdgeInsets.all(16),
@@ -352,6 +432,97 @@ class _ReportStatusScreenState extends State<ReportStatusScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// The honest state of the blockchain record: waiting, confirmed, or failed
+  /// (with a Retry button when the server says a retry is possible).
+  Widget _chainCard(Report r) {
+    final c = context.ss;
+
+    final (IconData icon, Color color, String title, String body) = switch (r.chainStatus) {
+      'confirmed' => (
+          Icons.verified_outlined,
+          AppColors.success,
+          'Confirmed on the blockchain',
+          r.etherscanUrl == null
+              ? 'The record is on the Sepolia test network. The transaction link '
+                  "isn't available for this report."
+              : 'A fingerprint of your evidence is permanently recorded on the '
+                  'Sepolia test network.',
+        ),
+      'failed' => (
+          Icons.error_outline_rounded,
+          AppColors.destructive,
+          'Blockchain logging failed',
+          'Your report and evidence are saved, but the blockchain record could '
+              'not be written. You can try again.',
+        ),
+      _ => (
+          Icons.hourglass_top_rounded,
+          AppColors.warning,
+          'Pending confirmation',
+          'Your report and evidence are saved. Waiting for the blockchain to '
+              'confirm the record, which usually takes under a minute.',
+        ),
+    };
+
+    final statusSyncing = r.chainConfirmed && r.statusOnChain != r.status;
+
+    return SSCard(
+      borderColor: color.withValues(alpha: 0.3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              IconTile(icon: icon, color: color),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700, color: c.foreground)),
+                    const SizedBox(height: 4),
+                    Text(body,
+                        style: TextStyle(fontSize: 12, height: 1.5, color: c.mutedForeground)),
+                    if (statusSyncing) ...[
+                      const SizedBox(height: 4),
+                      Text('Your latest status is being added to the record.',
+                          style: TextStyle(fontSize: 11, color: c.mutedForeground)),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (r.etherscanUrl != null) ...[
+            const SizedBox(height: 12),
+            GradientButton(
+              label: 'View on Etherscan',
+              icon: Icons.open_in_new_rounded,
+              variant: SSButtonVariant.outline,
+              height: 46,
+              fontSize: 13,
+              onPressed: () => _open(r.etherscanUrl!),
+            ),
+          ],
+          if (r.chainFailed && r.chainCanRetry) ...[
+            const SizedBox(height: 12),
+            GradientButton(
+              label: 'Retry',
+              icon: Icons.refresh_rounded,
+              height: 46,
+              fontSize: 13,
+              loading: _retrying,
+              onPressed: _retrying ? null : _retryChain,
+            ),
+          ],
+        ],
+      ),
     );
   }
 
