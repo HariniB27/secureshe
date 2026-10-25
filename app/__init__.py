@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, jsonify
 
 from flask_sqlalchemy import SQLAlchemy
 
@@ -58,10 +58,23 @@ def create_app():
 
     jwt.init_app(app)
 
-    # Allows Flutter web/local development
-    # to communicate with the Flask API.
-    CORS(app)
+    from app.limiter import limiter
 
+    limiter.init_app(app)
+
+    # CORS only matters for browser clients (Flutter web); the phone app
+    # doesn't use it. Off unless CORS_ORIGINS lists the origins to allow,
+    # e.g. CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:8080
+    # ("*" allows everything: local experiments only).
+    origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+    if origins:
+        CORS(app, origins="*" if origins == ["*"] else origins)
+
+    @app.errorhandler(429)
+    def too_many_requests(_error):
+        return jsonify({
+            "error": "Too many requests. Please wait a moment and try again."
+        }), 429
 
     # ---------------------------------------------------------
     # REGISTER ROUTES
@@ -81,45 +94,41 @@ def create_app():
     app.register_blueprint(sos_bp)
 
     # ---------------------------------------------------------
-    # CREATE DATABASE TABLES
+    # DATABASE + BACKGROUND WORKER
     # ---------------------------------------------------------
 
     with app.app_context():
-
-        db.create_all()
-        _add_missing_columns()
-
+        _prepare_database(app)
 
     return app
 
 
-# Columns added after the first release. db.create_all() only creates
-# missing tables, not missing columns, so add them here for databases that
-# already have data (the shared hosted Postgres).
-_NEW_COLUMNS = {
-    "complaint": {
-        "location_source": "VARCHAR(20)",
-        "category": "VARCHAR(30)",
-        "anonymous": "BOOLEAN DEFAULT FALSE",
-    },
-}
+def _prepare_database(app):
+    """Never changes a shared database. A throwaway local SQLite file gets
+    its tables created for convenience; anything else must be brought up to
+    date with `python scripts/migrate.py` (and we say so if it isn't)."""
+    from app.schema import find_schema_gaps
 
+    if db.engine.dialect.name == "sqlite":
+        db.create_all()
 
-def _add_missing_columns():
-    from sqlalchemy import inspect, text
+    missing_tables, missing_columns = find_schema_gaps(db.engine)
+    app.config["SCHEMA_OK"] = not (missing_tables or missing_columns)
 
-    inspector = inspect(db.engine)
-    existing_tables = set(inspector.get_table_names())
+    if not app.config["SCHEMA_OK"]:
+        print("[db] WARNING: the database schema is out of date, so some requests will fail.")
+        for table in missing_tables:
+            print(f"[db]   missing table : {table.name}")
+        for table, columns in missing_columns.items():
+            print(f"[db]   missing columns on {table}: {', '.join(c.name for c in columns)}")
+        print("[db] Run:  python scripts/migrate.py --dry-run   (then without --dry-run)")
+        print("[db] The blockchain worker is not started until the schema is current.")
+        return
 
-    for table, columns in _NEW_COLUMNS.items():
-        if table not in existing_tables:
-            continue
+    # One process only. Under Flask's debug reloader the parent process also
+    # imports the app, so skip it there and let the serving child start it.
+    reloader_parent = app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
+    if os.getenv("CHAIN_WORKER", "1") != "0" and not reloader_parent:
+        from app.chain_sync import start_worker
 
-        present = {c["name"] for c in inspector.get_columns(table)}
-
-        for name, sql_type in columns.items():
-            if name in present:
-                continue
-            with db.engine.begin() as conn:
-                conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN {name} {sql_type}'))
-            print(f"[db] added column {table}.{name}")
+        start_worker(app)

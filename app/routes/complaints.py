@@ -1,12 +1,22 @@
-from flask import Blueprint, request, jsonify
-from app import db
-from app.models import Complaint
-from flask_jwt_extended import jwt_required, get_jwt_identity
-import uuid
 import hashlib
+import hmac
+import logging
+import math
 import os
+import uuid
+from datetime import datetime
+
 import requests
-from app.blockchain import log_complaint_on_chain
+from flask import Blueprint, jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
+
+from app import chain_sync, db
+from app.limiter import ADMIN_LIMIT, RETRY_CHAIN_LIMIT, limiter
+from app.models import Complaint
+from app.statuses import STATUS_FLOW
+from app.validation import MAX_DESCRIPTION_LENGTH, MAX_LOCATION_TEXT_LENGTH
+
+log = logging.getLogger('secureshe.complaints')
 
 complaints_bp = Blueprint('complaints', __name__)
 
@@ -16,12 +26,8 @@ PINATA_PIN_URL = 'https://api.pinata.cloud/pinning/pinFileToIPFS'
 
 COMPLAINT_CATEGORIES = ('harassment', 'unsafe-area', 'suspicious')
 
-# The order a report moves through. The app draws its progress timeline
-# from this, so keep it in sync with STATUS_STEPS in report_status_screen.dart.
 # 5 IPFS CIDs (46 chars each) plus commas fit the 256-char ipfs_cid column.
 MAX_EVIDENCE = 5
-
-STATUS_FLOW = ('SUBMITTED', 'UNDER_REVIEW', 'INVESTIGATING', 'ACTION_TAKEN', 'RESOLVED')
 
 
 def upload_to_pinata(file_bytes, filename):
@@ -36,62 +42,87 @@ def upload_to_pinata(file_bytes, filename):
     return response.json()['IpfsHash']
 
 
+def _bad(message, code=400):
+    return jsonify({'error': message}), code
+
+
+def _number(raw):
+    """float() that also rejects nan/inf. Raises ValueError."""
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError('not finite')
+    return value
+
+
 @complaints_bp.route('/submit', methods=['POST'])
 @jwt_required()
 def submit_complaint():
     user_id = get_jwt_identity()
 
-    # Accepts multipart form (the app, with an evidence file) or JSON.
-    # Location can be sent as lat/lng or latitude/longitude.
+    # Accepts multipart form (the app, with evidence files) or JSON.
     if request.form or request.files:
         fields = request.form
     else:
-        fields = request.get_json(silent=True, force=True) or {}
+        body = request.get_json(silent=True, force=True)
+        fields = body if isinstance(body, dict) else {}
 
-    description = fields.get('description', '') or ''
+    description = str(fields.get('description', '') or '')
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        return _bad(f'Description must be at most {MAX_DESCRIPTION_LENGTH} characters')
 
+    # Location: a pin (lat + lng, both or neither) and/or typed text.
     lat_raw = fields.get('lat', fields.get('latitude'))
     lng_raw = fields.get('lng', fields.get('longitude'))
-    try:
-        latitude = float(lat_raw) if lat_raw not in (None, '') else None
-        longitude = float(lng_raw) if lng_raw not in (None, '') else None
-    except (TypeError, ValueError):
-        return jsonify({'error': 'lat/lng must be valid numbers'}), 400
+    has_lat = lat_raw not in (None, '')
+    has_lng = lng_raw not in (None, '')
 
-    if latitude is not None and not -90 <= latitude <= 90:
-        return jsonify({'error': 'Invalid latitude'}), 400
-    if longitude is not None and not -180 <= longitude <= 180:
-        return jsonify({'error': 'Invalid longitude'}), 400
+    if has_lat != has_lng:
+        return _bad('lat and lng must be provided together')
 
-    location_source = fields.get('location_source')
+    latitude = longitude = None
+    if has_lat:
+        try:
+            latitude = _number(lat_raw)
+            longitude = _number(lng_raw)
+        except (TypeError, ValueError):
+            return _bad('lat/lng must be valid numbers')
+        if not -90 <= latitude <= 90:
+            return _bad('Invalid latitude')
+        if not -180 <= longitude <= 180:
+            return _bad('Invalid longitude')
 
-    category = (fields.get('category') or '').strip() or None
+    location_source = fields.get('location_source') or None
+    if location_source is not None and location_source not in ('gps', 'manual'):
+        return _bad("location_source must be 'gps' or 'manual'")
+    if latitude is None:
+        location_source = None
+
+    location_text = str(fields.get('location_text') or '').strip() or None
+    if location_text and len(location_text) > MAX_LOCATION_TEXT_LENGTH:
+        return _bad(f'location_text must be at most {MAX_LOCATION_TEXT_LENGTH} characters')
+
+    category = str(fields.get('category') or '').strip() or None
     if category is not None and category not in COMPLAINT_CATEGORIES:
-        return jsonify({'error': 'Unknown category'}), 400
+        return _bad('Unknown category')
 
     anonymous = str(fields.get('anonymous', '')).strip().lower() in ('1', 'true', 'yes')
-    if location_source == '':
-        location_source = None
-    if location_source is not None and location_source not in ('gps', 'manual'):
-        return jsonify({'error': "location_source must be 'gps' or 'manual'"}), 400
 
     complaint_id = str(uuid.uuid4())[:8].upper()
     ipfs_cid = None
-    evidence_hash = None
 
     # Evidence: one or more files sent as "evidence" (up to MAX_EVIDENCE).
     # Each is pinned to IPFS. The hash logged on-chain covers all of them:
     # sha256 of the files' own sha256 hashes, in upload order. With a single
-    # file that is simply that file's hash, as before.
+    # file that is simply that file's hash.
     evidence_files = [f for f in request.files.getlist('evidence') if f]
     if len(evidence_files) > MAX_EVIDENCE:
-        return jsonify({'error': f'At most {MAX_EVIDENCE} evidence files per report'}), 400
+        return _bad(f'At most {MAX_EVIDENCE} evidence files per report')
 
     cids = []
     file_hashes = []
     if evidence_files:
         if not (PINATA_API_KEY and PINATA_SECRET_API_KEY):
-            return jsonify({'error': 'Pinata API keys not configured'}), 500
+            return _bad('Pinata API keys not configured', 500)
 
         for evidence_file in evidence_files:
             file_bytes = evidence_file.read()
@@ -99,9 +130,9 @@ def submit_complaint():
             try:
                 cids.append(upload_to_pinata(file_bytes, evidence_file.filename or 'evidence'))
             except requests.HTTPError as e:
-                return jsonify({'error': f'Pinata upload failed: {e.response.text}'}), 502
-            except requests.RequestException as e:
-                return jsonify({'error': f'Pinata connection error: {str(e)}'}), 502
+                return _bad(f'Pinata upload failed: {e.response.text}', 502)
+            except requests.RequestException:
+                return _bad('Could not reach the evidence storage service. Try again.', 502)
 
         if len(file_hashes) == 1:
             evidence_hash = file_hashes[0]
@@ -110,16 +141,8 @@ def submit_complaint():
         # Comma-separated so the existing single-CID column still works.
         ipfs_cid = ','.join(cids)
     else:
-        # No file — hash the description as a placeholder
+        # No file: hash the description as a placeholder.
         evidence_hash = hashlib.sha256(description.encode()).hexdigest()
-
-    blockchain_tx = None
-    try:
-        blockchain_tx = log_complaint_on_chain(complaint_id, evidence_hash)
-    except Exception as e:
-        # Don't fail the whole submission if the chain write fails — the complaint and its
-        # hash are still saved in the database below. Logged so it can be retried/backfilled.
-        print(f"[blockchain] failed to log complaint {complaint_id}: {e}")
 
     complaint = Complaint(
         complaint_id=complaint_id,
@@ -127,38 +150,32 @@ def submit_complaint():
         description=description,
         evidence_hash=evidence_hash,
         ipfs_cid=ipfs_cid,
-        blockchain_tx=blockchain_tx,
         latitude=latitude,
         longitude=longitude,
         location_source=location_source,
+        location_text=location_text,
         category=category,
         anonymous=anonymous,
-        status='SUBMITTED'
+        status='SUBMITTED',
+        chain_status='pending',
+        chain_attempts=0,
+        # Marks the row as "this request is sending it right now", so the
+        # background worker doesn't send a duplicate in the gap before
+        # attempt_log() below stores the tx hash.
+        chain_sent_at=datetime.utcnow(),
     )
-
     db.session.add(complaint)
     db.session.commit()
 
-    response_data = {
-        'message': 'Complaint submitted successfully',
-        'complaint_id': complaint_id,
-        'evidence_hash': evidence_hash,
-        'status': 'SUBMITTED'
-    }
-    if ipfs_cid:
-        response_data['ipfs_cid'] = ipfs_cid
-        response_data['evidence'] = _evidence_list(ipfs_cid)
-        response_data['ipfs_url'] = response_data['evidence'][0]['url']
-    if blockchain_tx:
-        response_data['blockchain_tx'] = blockchain_tx
-        response_data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{blockchain_tx}'
-    if latitude is not None or longitude is not None:
-        response_data['latitude'] = latitude
-        response_data['longitude'] = longitude
-    if location_source is not None:
-        response_data['location_source'] = location_source
+    # Broadcast the log transaction and return straight away; the worker
+    # confirms it (and retries if needed). A chain problem never fails the report.
+    try:
+        chain_sync.attempt_log(complaint)
+    except Exception:
+        db.session.rollback()
+        log.exception('[chain] could not start logging %s', complaint_id)
 
-    return jsonify(response_data), 201
+    return jsonify({'message': 'Complaint submitted successfully', **_complaint_json(complaint)}), 201
 
 
 def _evidence_list(ipfs_cid):
@@ -173,9 +190,12 @@ def _iso(value):
 
 
 def _complaint_json(complaint):
+    chain_status = complaint.chain_status or 'pending'
     data = {
         'complaint_id': complaint.complaint_id,
         'status': complaint.status,
+        # The steps a report moves through, so the app draws the same list.
+        'status_flow': list(STATUS_FLOW),
         'category': complaint.category,
         'anonymous': bool(complaint.anonymous),
         'description': complaint.description or '',
@@ -184,8 +204,13 @@ def _complaint_json(complaint):
         'latitude': complaint.latitude,
         'longitude': complaint.longitude,
         'location_source': complaint.location_source,
+        'location_text': complaint.location_text,
         'created_at': _iso(complaint.created_at),
         'updated_at': _iso(complaint.updated_at),
+        # pending | confirmed | failed (the raw error stays server-side).
+        'chain_status': chain_status,
+        'chain_can_retry': chain_status == 'failed',
+        'status_on_chain': complaint.chain_synced_status,
     }
     if complaint.ipfs_cid:
         data['ipfs_cid'] = complaint.ipfs_cid
@@ -197,16 +222,21 @@ def _complaint_json(complaint):
     return data
 
 
+def _owned(complaint_id):
+    """The complaint if it exists AND belongs to the caller, else None.
+    The same answer for both cases, so IDs can't be probed."""
+    complaint = Complaint.query.filter_by(complaint_id=complaint_id).first()
+    if not complaint or str(complaint.user_id) != str(get_jwt_identity()):
+        return None
+    return complaint
+
+
 @complaints_bp.route('/status/<complaint_id>', methods=['GET'])
 @jwt_required()
 def get_status(complaint_id):
-    complaint = Complaint.query.filter_by(complaint_id=complaint_id).first()
-
-    # Only the person who filed a report can see it. Answer "not found"
-    # either way, so IDs can't be probed.
-    if not complaint or str(complaint.user_id) != str(get_jwt_identity()):
-        return jsonify({'error': 'Complaint not found'}), 404
-
+    complaint = _owned(complaint_id)
+    if not complaint:
+        return _bad('Complaint not found', 404)
     return jsonify(_complaint_json(complaint)), 200
 
 
@@ -222,3 +252,78 @@ def my_complaints():
         .all()
     )
     return jsonify({'complaints': [_complaint_json(c) for c in complaints]}), 200
+
+
+@complaints_bp.route('/<complaint_id>/retry-chain', methods=['POST'])
+@limiter.limit(RETRY_CHAIN_LIMIT)
+@jwt_required()
+def retry_chain(complaint_id):
+    """Owner-only: try the blockchain log again after it failed."""
+    complaint = _owned(complaint_id)
+    if not complaint:
+        return _bad('Complaint not found', 404)
+
+    if complaint.chain_status == 'confirmed':
+        return jsonify({'error': 'Already confirmed on the blockchain',
+                        **_complaint_json(complaint)}), 409
+    if complaint.chain_status == 'pending' and complaint.blockchain_tx:
+        return jsonify({'error': 'A blockchain transaction is already waiting to be confirmed',
+                        **_complaint_json(complaint)}), 409
+
+    chain_sync.retry_log(complaint)
+    return jsonify(_complaint_json(complaint)), 202
+
+
+def _admin_key_state():
+    """'disabled' when no key is configured (fail closed), else True/False."""
+    expected = os.getenv('ADMIN_API_KEY', '')
+    if not expected:
+        return 'disabled'
+    given = request.headers.get('X-Admin-Key', '')
+    return hmac.compare_digest(given.encode('utf-8'), expected.encode('utf-8'))
+
+
+@complaints_bp.route('/<complaint_id>/status', methods=['PATCH'])
+@limiter.limit(ADMIN_LIMIT)
+def admin_set_status(complaint_id):
+    """Admin-only (X-Admin-Key). Updates the status in the database and
+    pushes it on-chain without waiting for the transaction to be mined."""
+    key = _admin_key_state()
+    if key == 'disabled':
+        return _bad('Admin status updates are disabled (ADMIN_API_KEY is not set)', 503)
+    if not key:
+        return _bad('Forbidden', 403)
+
+    body = request.get_json(silent=True)
+    new_status = str((body or {}).get('status', '')).strip().upper()
+    if new_status not in STATUS_FLOW:
+        return _bad(f"status must be one of: {', '.join(STATUS_FLOW)}")
+
+    complaint = Complaint.query.filter_by(complaint_id=complaint_id).first()
+    if not complaint:
+        return _bad('Complaint not found', 404)
+
+    previous = complaint.status
+    if new_status != previous:
+        complaint.status = new_status
+        complaint.updated_at = datetime.utcnow()
+        db.session.commit()
+
+    # Idempotent: re-sending the same status retries the on-chain update.
+    try:
+        chain_sync.kick_status_sync(complaint)
+    except Exception:
+        db.session.rollback()
+        log.exception('[chain] could not start status sync for %s', complaint_id)
+
+    result = {
+        'complaint_id': complaint.complaint_id,
+        'status': complaint.status,
+        'previous_status': previous,
+        'chain_status': complaint.chain_status or 'pending',
+        'status_on_chain': complaint.chain_synced_status,
+    }
+    if complaint.status_tx:
+        result['status_tx'] = complaint.status_tx
+        result['etherscan_status_url'] = f'https://sepolia.etherscan.io/tx/{complaint.status_tx}'
+    return jsonify(result), 200

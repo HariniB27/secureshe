@@ -1,3 +1,5 @@
+import sqlalchemy as sa
+
 from app import db
 from datetime import datetime
 
@@ -23,10 +25,24 @@ class Complaint(db.Model):
     location_source = db.Column(db.String(20), nullable=True)
     # harassment | unsafe-area | suspicious (from the Report screen)
     category = db.Column(db.String(30), nullable=True)
-    anonymous = db.Column(db.Boolean, nullable=True, default=False)
+    anonymous = db.Column(db.Boolean, nullable=True, default=False, server_default=sa.false())
+    # What the reporter typed in "Where did this happen?" (separate from the pin).
+    location_text = db.Column(db.String(200), nullable=True)
     status = db.Column(db.String(50), default='SUBMITTED')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Time of the last STATUS change (the app shows it on the timeline).
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # --- Blockchain bookkeeping (see app/chain_sync.py) -----------------
+    # pending | confirmed | failed  (state of the logComplaint transaction)
+    chain_status = db.Column(db.String(20), nullable=True)
+    chain_attempts = db.Column(db.Integer, nullable=True, default=0, server_default=sa.text('0'))
+    chain_error = db.Column(db.String(300), nullable=True)  # server-side only, never sent to the app
+    chain_sent_at = db.Column(db.DateTime, nullable=True)   # when the latest tx was sent
+    # The status value last CONFIRMED on-chain, and the in-flight updateStatus tx.
+    chain_synced_status = db.Column(db.String(50), nullable=True)
+    status_tx = db.Column(db.String(256), nullable=True)
+    status_tx_value = db.Column(db.String(50), nullable=True)
 
 class CrimeDistrict(db.Model):
     __tablename__ = "crime_district"
