@@ -165,7 +165,7 @@ class _TripTrackingScreenState extends State<TripTrackingScreen> {
                         points: trip.route,
                         strokeWidth: 4,
                         color: AppColors.primary,
-                        pattern: const StrokePattern.dashed(segments: [10, 5]),
+                        pattern: StrokePattern.dashed(segments: const [10, 5]),
                       ),
                     ],
                   ),

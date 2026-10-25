@@ -24,7 +24,7 @@ class SSBackground extends StatelessWidget {
           child: Image.asset(
             'assets/images/background.png',
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         ),
         ColoredBox(color: c.overlay),
@@ -61,7 +61,7 @@ class SSPage extends StatelessWidget {
       body: SSBackground(
         child: Column(
           children: [
-            if (header != null) header!,
+            ?header,
             Expanded(
               child: header == null
                   ? SafeArea(bottom: safeBottom, child: body)
@@ -148,11 +148,11 @@ class GlassHeader extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (trailing != null) trailing!,
+                  ?trailing,
                 ],
               ),
             ),
-            if (bottom != null) bottom!,
+            ?bottom,
           ],
         ),
       ),

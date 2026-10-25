@@ -904,7 +904,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               }
             },
             onPositionChanged: _onCamera,
-            onTap: (_, __) {
+            onTap: (_, _) {
               _toFocus.unfocus();
               if (_pick != null) setState(() => _pick = null);
             },
@@ -1116,7 +1116,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       points: chosen.points,
       strokeWidth: 4,
       color: color,
-      pattern: const StrokePattern.dashed(segments: [10, 5]),
+      pattern: StrokePattern.dashed(segments: const [10, 5]),
     ));
 
     final destination = _destination;
@@ -1249,8 +1249,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             if (_routes[i].viaMainRoads) 'Main roads',
                             if (i != safest && i != fastest && !_routes[i].viaMainRoads)
                               'Option ${i + 1}',
-                          ].join(' · ') +
-                              ' · ${_routes[i].durationMinutes.round()} min',
+                            '${_routes[i].durationMinutes.round()} min',
+                          ].join(' · '),
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,

@@ -82,8 +82,8 @@ class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
       'allergies': _allergies.text.trim(),
       'medical': _medical.text.trim(),
       if (_dob != null) 'dob': _dob!.toIso8601String(),
-      if (_gender != null) 'gender': _gender!,
-      if (_bloodType != null) 'blood': _bloodType!,
+      'gender': ?_gender,
+      'blood': ?_bloodType,
     });
 
     if (!mounted) return;

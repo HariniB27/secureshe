@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -902,7 +901,7 @@ class _AttachmentTile extends StatelessWidget {
                     width: 56,
                     height: 56,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => IconTile(icon: icon, color: color, size: 56),
+                    errorBuilder: (_, _, _) => IconTile(icon: icon, color: color, size: 56),
                   )
                 : IconTile(icon: icon, color: color, size: 56),
           ),
@@ -1068,7 +1067,7 @@ class _AudioRecordSheetState extends State<_AudioRecordSheet>
             height: 40,
             child: AnimatedBuilder(
               animation: _wave,
-              builder: (_, __) => Row(
+              builder: (_, _) => Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [

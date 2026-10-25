@@ -242,8 +242,8 @@ class ApiService {
           Uri.parse('$baseUrl/api/auth/me'),
           headers: _jsonHeaders(token),
           body: jsonEncode({
-            if (name != null) 'name': name,
-            if (phone != null) 'phone': phone,
+            'name': ?name,
+            'phone': ?phone,
           }),
         ),
       );
@@ -285,7 +285,7 @@ class ApiService {
         ),
       );
 
-  /// GET /api/complaints/status/<id> — one of your reports.
+  /// `GET /api/complaints/status/<id>`: one of your reports.
   static Future<http.Response> complaintStatus(String id) => authedRequest(
         (token) => http.get(
           Uri.parse('$baseUrl/api/complaints/status/$id'),
