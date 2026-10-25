@@ -2,6 +2,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app import db
 from app.models import Complaint, CrimeDistrict
@@ -1190,3 +1191,96 @@ def route_check():
         "night": night,
         "environment_checked": environment_checked,
     })
+
+
+# ============================================================
+# Community flags  (POST/GET /api/safety/flags)
+# ============================================================
+#
+# Quick map markers from the Safety Map's "Add Community Flag" sheet.
+# Posting needs a login; reading is public and, like live reports,
+# returns only a rounded position, kind and time (never who posted).
+
+FLAG_KINDS = ("dark-street", "harassment", "suspicious", "safe-zone")
+FLAG_DEFAULT_HOURS = 24 * 7
+
+# One person can't carpet an area with flags.
+FLAG_LIMIT_PER_HOUR = 10
+
+
+@safety_bp.route("/flags", methods=["POST"])
+@jwt_required()
+def add_flag():
+    from app.models import CommunityFlag
+
+    body = request.get_json(silent=True) or {}
+    kind = (body.get("kind") or "").strip()
+
+    if kind not in FLAG_KINDS:
+        return jsonify({"error": f"kind must be one of {', '.join(FLAG_KINDS)}"}), 400
+
+    try:
+        lat = float(body.get("lat"))
+        lng = float(body.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat and lng are required numbers"}), 400
+
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({"error": "Invalid latitude or longitude"}), 400
+
+    user_id = int(get_jwt_identity())
+    recent = CommunityFlag.query.filter(
+        CommunityFlag.user_id == user_id,
+        CommunityFlag.created_at > datetime.utcnow() - timedelta(hours=1),
+    ).count()
+
+    if recent >= FLAG_LIMIT_PER_HOUR:
+        return jsonify({"error": "Too many flags in the last hour. Try again later."}), 429
+
+    flag = CommunityFlag(user_id=user_id, kind=kind, latitude=lat, longitude=lng)
+    db.session.add(flag)
+    db.session.commit()
+
+    return jsonify(_flag_feature(flag)), 201
+
+
+@safety_bp.route("/flags", methods=["GET"])
+def list_flags():
+    from app.models import CommunityFlag
+
+    try:
+        hours = float(request.args.get("hours", FLAG_DEFAULT_HOURS))
+    except (TypeError, ValueError):
+        hours = FLAG_DEFAULT_HOURS
+    hours = min(max(hours, 1.0), 24 * 90)
+
+    flags = (
+        CommunityFlag.query
+        .filter(CommunityFlag.created_at > datetime.utcnow() - timedelta(hours=hours))
+        .order_by(CommunityFlag.created_at.desc())
+        .limit(LIVE_MAX_RESULTS)
+        .all()
+    )
+
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": [_flag_feature(f) for f in flags],
+    })
+
+
+def _flag_feature(flag):
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [
+                round(flag.longitude, PUBLIC_COORD_DECIMALS),
+                round(flag.latitude, PUBLIC_COORD_DECIMALS),
+            ],
+        },
+        "properties": {
+            "id": flag.id,
+            "kind": flag.kind,
+            "reported_at": _utc_iso(flag.created_at),
+        },
+    }

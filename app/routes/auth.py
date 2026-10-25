@@ -81,3 +81,95 @@ def verify_password():
         return jsonify({'verified': False}), 401
 
     return jsonify({'verified': True}), 200
+
+def _user_json(user):
+    return {
+        'id': user.id,
+        'name': user.name,
+        'email': user.email,
+        'phone': user.phone,
+        'created_at': user.created_at.isoformat() + 'Z' if user.created_at else None,
+    }
+
+
+@auth_bp.route('/me', methods=['GET'])
+@jwt_required()
+def get_me():
+    """The signed-in user's profile, so the app can show it after a restart."""
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify(_user_json(user)), 200
+
+
+@auth_bp.route('/me', methods=['PUT'])
+@jwt_required()
+def update_me():
+    """Update name and/or phone. Email changes aren't supported here."""
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    name = (data.get('name') or '').strip()
+    phone = (data.get('phone') or '').strip()
+
+    if 'name' in data:
+        if not name:
+            return jsonify({'error': 'Name cannot be empty'}), 400
+        user.name = name[:100]
+
+    if 'phone' in data:
+        if not phone:
+            return jsonify({'error': 'Phone cannot be empty'}), 400
+        user.phone = phone[:20]
+
+    db.session.commit()
+    return jsonify(_user_json(user)), 200
+
+
+@auth_bp.route('/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    data = request.get_json(silent=True) or {}
+    current = data.get('current_password') or ''
+    new = data.get('new_password') or ''
+
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    if not bcrypt.check_password_hash(user.password, current):
+        return jsonify({'error': 'Current password is incorrect'}), 401
+
+    if len(new) < 8:
+        return jsonify({'error': 'New password must be at least 8 characters'}), 400
+
+    user.password = bcrypt.generate_password_hash(new).decode('utf-8')
+    db.session.commit()
+    return jsonify({'message': 'Password updated'}), 200
+
+
+@auth_bp.route('/me', methods=['DELETE'])
+@jwt_required()
+def delete_me():
+    """Permanently deletes the account and everything linked to it.
+    Requires the password again, so a stolen unlocked phone can't do it
+    with one tap."""
+    from app.models import Complaint, TrustedContact, CommunityFlag
+
+    data = request.get_json(silent=True) or {}
+    user = User.query.get(int(get_jwt_identity()))
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    if not bcrypt.check_password_hash(user.password, data.get('password') or ''):
+        return jsonify({'error': 'Password is incorrect'}), 401
+
+    for model in (Complaint, TrustedContact, CommunityFlag):
+        model.query.filter_by(user_id=user.id).delete()
+
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'message': 'Account deleted'}), 200

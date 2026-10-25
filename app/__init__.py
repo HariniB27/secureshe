@@ -87,6 +87,39 @@ def create_app():
     with app.app_context():
 
         db.create_all()
+        _add_missing_columns()
 
 
     return app
+
+
+# Columns added after the first release. db.create_all() only creates
+# missing tables, not missing columns, so add them here for databases that
+# already have data (the shared hosted Postgres).
+_NEW_COLUMNS = {
+    "complaint": {
+        "location_source": "VARCHAR(20)",
+        "category": "VARCHAR(30)",
+        "anonymous": "BOOLEAN DEFAULT FALSE",
+    },
+}
+
+
+def _add_missing_columns():
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, columns in _NEW_COLUMNS.items():
+        if table not in existing_tables:
+            continue
+
+        present = {c["name"] for c in inspector.get_columns(table)}
+
+        for name, sql_type in columns.items():
+            if name in present:
+                continue
+            with db.engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN {name} {sql_type}'))
+            print(f"[db] added column {table}.{name}")

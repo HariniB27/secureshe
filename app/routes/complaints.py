@@ -14,6 +14,12 @@ PINATA_API_KEY = os.getenv('PINATA_API_KEY')
 PINATA_SECRET_API_KEY = os.getenv('PINATA_SECRET_API_KEY')
 PINATA_PIN_URL = 'https://api.pinata.cloud/pinning/pinFileToIPFS'
 
+COMPLAINT_CATEGORIES = ('harassment', 'unsafe-area', 'suspicious')
+
+# The order a report moves through. The app draws its progress timeline
+# from this, so keep it in sync with STATUS_STEPS in report_status_screen.dart.
+STATUS_FLOW = ('SUBMITTED', 'UNDER_REVIEW', 'INVESTIGATING', 'ACTION_TAKEN', 'RESOLVED')
+
 
 def upload_to_pinata(file_bytes, filename):
     """Upload file bytes to Pinata IPFS. Returns CID string or raises."""
@@ -55,6 +61,12 @@ def submit_complaint():
         return jsonify({'error': 'Invalid longitude'}), 400
 
     location_source = fields.get('location_source')
+
+    category = (fields.get('category') or '').strip() or None
+    if category is not None and category not in COMPLAINT_CATEGORIES:
+        return jsonify({'error': 'Unknown category'}), 400
+
+    anonymous = str(fields.get('anonymous', '')).strip().lower() in ('1', 'true', 'yes')
     if location_source == '':
         location_source = None
     if location_source is not None and location_source not in ('gps', 'manual'):
@@ -100,6 +112,8 @@ def submit_complaint():
         latitude=latitude,
         longitude=longitude,
         location_source=location_source,
+        category=category,
+        anonymous=anonymous,
         status='SUBMITTED'
     )
 
@@ -127,19 +141,24 @@ def submit_complaint():
     return jsonify(response_data), 201
 
 
-@complaints_bp.route('/status/<complaint_id>', methods=['GET'])
-@jwt_required()
-def get_status(complaint_id):
-    complaint = Complaint.query.filter_by(complaint_id=complaint_id).first()
+def _iso(value):
+    return value.isoformat() + 'Z' if value else None
 
-    if not complaint:
-        return jsonify({'error': 'Complaint not found'}), 404
 
+def _complaint_json(complaint):
     data = {
         'complaint_id': complaint.complaint_id,
         'status': complaint.status,
+        'category': complaint.category,
+        'anonymous': bool(complaint.anonymous),
+        'description': complaint.description or '',
         'evidence_hash': complaint.evidence_hash,
-        'created_at': complaint.created_at.isoformat()
+        'has_evidence': bool(complaint.ipfs_cid),
+        'latitude': complaint.latitude,
+        'longitude': complaint.longitude,
+        'location_source': complaint.location_source,
+        'created_at': _iso(complaint.created_at),
+        'updated_at': _iso(complaint.updated_at),
     }
     if complaint.ipfs_cid:
         data['ipfs_cid'] = complaint.ipfs_cid
@@ -147,5 +166,31 @@ def get_status(complaint_id):
     if complaint.blockchain_tx:
         data['blockchain_tx'] = complaint.blockchain_tx
         data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{complaint.blockchain_tx}'
+    return data
 
-    return jsonify(data), 200
+
+@complaints_bp.route('/status/<complaint_id>', methods=['GET'])
+@jwt_required()
+def get_status(complaint_id):
+    complaint = Complaint.query.filter_by(complaint_id=complaint_id).first()
+
+    # Only the person who filed a report can see it. Answer "not found"
+    # either way, so IDs can't be probed.
+    if not complaint or str(complaint.user_id) != str(get_jwt_identity()):
+        return jsonify({'error': 'Complaint not found'}), 404
+
+    return jsonify(_complaint_json(complaint)), 200
+
+
+@complaints_bp.route('/mine', methods=['GET'])
+@jwt_required()
+def my_complaints():
+    """The signed-in user's own reports, newest first."""
+    complaints = (
+        Complaint.query
+        .filter_by(user_id=int(get_jwt_identity()))
+        .order_by(Complaint.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return jsonify({'complaints': [_complaint_json(c) for c in complaints]}), 200
