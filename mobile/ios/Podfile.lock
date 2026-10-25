@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - telephony (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - telephony (from `.symlinks/plugins/telephony/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  telephony:
+    :path: ".symlinks/plugins/telephony/ios"
+
+SPEC CHECKSUMS:
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  telephony: 092fd9f86ca076809b22f4efe52e5d4e57a4e674
+
+PODFILE CHECKSUM: 3ba3a73b1b12adcf321a227a745625fe0888cc82
+
+COCOAPODS: 1.17.0
