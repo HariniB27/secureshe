@@ -33,28 +33,20 @@ def create_app():
     # CONFIGURATION
     # ---------------------------------------------------------
 
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
-        "DATABASE_URL"
-    )
-
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-    app.config["SECRET_KEY"] = os.getenv(
-        "SECRET_KEY"
-    )
+    # Hosted Postgres drops idle connections; check and recycle them so a
+    # stale connection doesn't fail the next request.
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
 
-    app.config["JWT_SECRET_KEY"] = os.getenv(
-        "JWT_SECRET_KEY"
-    )
-
-    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = (
-        timedelta(minutes=30)
-    )
-
-    app.config["JWT_REFRESH_TOKEN_EXPIRES"] = (
-        timedelta(days=30)
-    )
-
+    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=30)
+    app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=30)
 
     # ---------------------------------------------------------
     # INITIALIZE EXTENSIONS
@@ -80,23 +72,13 @@ def create_app():
     from app.routes.complaints import complaints_bp
 
     from app.routes.safety import safety_bp
+    from app.routes.sos import sos_bp
 
-
-    app.register_blueprint(
-        auth_bp,
-        url_prefix="/api/auth"
-    )
-
-    app.register_blueprint(
-        complaints_bp,
-        url_prefix="/api/complaints"
-    )
-
-    app.register_blueprint(
-        safety_bp,
-        url_prefix="/api/safety"
-    )
-
+    app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(complaints_bp, url_prefix="/api/complaints")
+    app.register_blueprint(safety_bp, url_prefix="/api/safety")
+    # sos routes carry their own /api/... paths.
+    app.register_blueprint(sos_bp)
 
     # ---------------------------------------------------------
     # CREATE DATABASE TABLES
