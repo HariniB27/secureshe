@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import '../config.dart';
+
 class CrimeSpot {
   final int id;
   final double latitude;
@@ -82,8 +84,9 @@ class SafetyScore {
 }
 
 class SafetyApiService {
-  static const String baseUrl =
-      'http://127.0.0.1:5000/api/safety';
+  static String get baseUrl => ApiConfig.safetyUrl;
+
+  static const Duration _timeout = Duration(seconds: 12);
 
   Future<SafetyScore> fetchScore(LatLng point) async {
     final uri = Uri.parse(
@@ -92,7 +95,7 @@ class SafetyApiService {
       '&lng=${point.longitude}',
     );
 
-    final response = await http.get(uri);
+    final response = await http.get(uri).timeout(_timeout);
 
     if (response.statusCode != 200) {
       throw Exception(
@@ -126,7 +129,7 @@ class SafetyApiService {
             )
             .toList(),
       }),
-    );
+    ).timeout(_timeout);
 
     if (response.statusCode != 200) {
       throw Exception(
@@ -166,7 +169,7 @@ class SafetyApiService {
       queryParameters: queryParameters,
     );
 
-    final response = await http.get(uri);
+    final response = await http.get(uri).timeout(_timeout);
 
     if (response.statusCode != 200) {
       throw Exception(
@@ -188,6 +191,122 @@ class SafetyApiService {
           ),
         )
         .toList();
+  }
+
+  /// Recent complaint locations for the live map layer.
+  ///
+  /// Pass the [LiveReportsPage.serverTime] from the previous call as
+  /// [since] to get only the reports added after it.
+  Future<LiveReportsPage> fetchLiveReports({String? since}) async {
+    final params = <String, String>{};
+    if (since != null) params['since'] = since;
+
+    final uri = Uri.parse('$baseUrl/live-reports')
+        .replace(queryParameters: params.isEmpty ? null : params);
+
+    final response = await http.get(uri).timeout(_timeout);
+
+    if (response.statusCode != 200) {
+      throw Exception('Live reports failed: ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    return LiveReportsPage(
+      reports: (data['features'] as List? ?? [])
+          .map((f) => LiveReport.fromFeature(Map<String, dynamic>.from(f as Map)))
+          .toList(),
+      serverTime: data['server_time'] as String?,
+    );
+  }
+
+  /// One point per district from the historical crime dataset.
+  Future<List<DistrictCrime>> fetchDistrictCrime() async {
+    final response = await http
+        .get(Uri.parse('$baseUrl/historical-crime-points'))
+        .timeout(_timeout);
+
+    if (response.statusCode != 200) {
+      throw Exception('Historical crime data failed: ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    return (data['features'] as List? ?? [])
+        .map((f) => DistrictCrime.fromFeature(Map<String, dynamic>.from(f as Map)))
+        .toList();
+  }
+}
+
+class LiveReportsPage {
+  final List<LiveReport> reports;
+  final String? serverTime;
+
+  LiveReportsPage({required this.reports, required this.serverTime});
+}
+
+/// A complaint location as the public map sees it: rounded position and
+/// time only, no description or identity.
+class LiveReport {
+  final int id;
+  final LatLng point;
+  final DateTime? reportedAt;
+
+  LiveReport({required this.id, required this.point, required this.reportedAt});
+
+  factory LiveReport.fromFeature(Map<String, dynamic> feature) {
+    final coords = (feature['geometry'] as Map)['coordinates'] as List;
+    final props = Map<String, dynamic>.from(feature['properties'] as Map);
+    final reported = props['reported_at'] as String?;
+
+    return LiveReport(
+      id: (props['id'] as num).toInt(),
+      point: LatLng(
+        (coords[1] as num).toDouble(),
+        (coords[0] as num).toDouble(),
+      ),
+      reportedAt: reported == null ? null : DateTime.tryParse(reported),
+    );
+  }
+
+  Duration? get age =>
+      reportedAt == null ? null : DateTime.now().toUtc().difference(reportedAt!);
+}
+
+class DistrictCrime {
+  final String district;
+  final String state;
+  final int year;
+  final int totalCrimes;
+
+  /// 0..1 relative to the worst district in the dataset.
+  final double intensity;
+  final LatLng point;
+
+  DistrictCrime({
+    required this.district,
+    required this.state,
+    required this.year,
+    required this.totalCrimes,
+    required this.intensity,
+    required this.point,
+  });
+
+  factory DistrictCrime.fromFeature(Map<String, dynamic> feature) {
+    final coords = (feature['geometry'] as Map)['coordinates'] as List;
+    final props = Map<String, dynamic>.from(feature['properties'] as Map);
+
+    return DistrictCrime(
+      district: props['district'] as String? ?? '',
+      state: props['state'] as String? ?? '',
+      year: (props['year'] as num?)?.toInt() ?? 0,
+      totalCrimes: (props['total_crimes'] as num?)?.toInt() ?? 0,
+      intensity: (props['intensity'] as num?)?.toDouble() ?? 0,
+      point: LatLng(
+        (coords[1] as num).toDouble(),
+        (coords[0] as num).toDouble(),
+      ),
+    );
   }
 }
 

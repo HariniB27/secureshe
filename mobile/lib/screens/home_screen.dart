@@ -334,6 +334,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 16),
 
+            // Safe route.
+            Card(
+              child: ListTile(
+                leading: const Icon(
+                  Icons.alt_route,
+                  size: 35,
+                ),
+
+                title: const Text(
+                  'Safe Route',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+
+                subtitle: const Text(
+                  'Find the safest way to get somewhere.',
+                ),
+
+                trailing:
+                    const Icon(Icons.arrow_forward_ios),
+
+                onTap: () {
+                  Navigator.of(context)
+                      .pushNamed('/safe-route');
+                },
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
             // Report incident.
             Card(
               child: ListTile(

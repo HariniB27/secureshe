@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -822,48 +822,171 @@ def get_safety_scores_batch():
             "results": results
         }
     )
+
 # ============================================================
-# GET /api/safety/crime-points
-# Returns individual crime/complaint locations for the map.
+# MAP FEEDS
 # ============================================================
+#
+# These endpoints are public (no login), so they must never
+# expose who reported something or what they wrote. They only
+# return a rounded location and a timestamp.
 
-@safety_bp.route("/crime-points", methods=["GET"])
-def get_crime_points():
+# 3 decimal places is roughly 110 m, so a pin shows the area
+# of a report rather than an exact doorstep.
+PUBLIC_COORD_DECIMALS = 3
 
-    complaints = Complaint.query.filter(
-        Complaint.latitude.isnot(None),
-        Complaint.longitude.isnot(None),
-    ).all()
+# How far back the live layer looks by default.
+LIVE_DEFAULT_HOURS = 24 * 30
 
-    features = []
+# Upper bound so one request can't pull the whole table.
+LIVE_MAX_RESULTS = 2000
 
-    for complaint in complaints:
 
-        features.append({
-            "type": "Feature",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [
-                    complaint.longitude,
-                    complaint.latitude,
-                ],
-            },
-            "properties": {
-                "id": complaint.id,
-                "complaint_id": complaint.complaint_id,
-                "description": complaint.description or "",
-                "status": complaint.status or "SUBMITTED",
-            },
-        })
+def _utc_iso(value):
+    if value is None:
+        return None
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _parse_since(raw):
+    """Parse an ISO timestamp into a naive UTC datetime.
+
+    Complaint.created_at is stored as naive UTC
+    (datetime.utcnow), so comparisons must be naive too.
+    """
+    if not raw:
+        return None
+
+    try:
+        value = datetime.fromisoformat(
+            raw.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return value
+
+
+def _public_report_feature(complaint, now):
+    created = get_complaint_datetime(complaint)
+
+    age_hours = None
+    if created is not None:
+        created_naive = (
+            created.astimezone(timezone.utc).replace(tzinfo=None)
+            if created.tzinfo is not None
+            else created
+        )
+        age_hours = round(
+            max(0.0, (now - created_naive).total_seconds() / 3600.0),
+            1,
+        )
+
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [
+                round(float(complaint.longitude), PUBLIC_COORD_DECIMALS),
+                round(float(complaint.latitude), PUBLIC_COORD_DECIMALS),
+            ],
+        },
+        "properties": {
+            "id": complaint.id,
+            "reported_at": _utc_iso(created),
+            "age_hours": age_hours,
+            "weight": round(recency_weight(created), 3),
+        },
+    }
+
+
+# ============================================================
+# GET /api/safety/live-reports
+# ============================================================
+#
+# Recent complaint locations for the live layer of the map.
+#
+#   ?since=<ISO time>  only reports newer than this. The app
+#                      sends back the server_time from its
+#                      previous call, so each poll returns only
+#                      what is new.
+#   ?hours=<n>         look-back window when since is not
+#                      given (default 30 days).
+#
+# Response: GeoJSON FeatureCollection plus server_time.
+
+@safety_bp.route("/live-reports", methods=["GET"])
+def get_live_reports():
+
+    # Taken before the query so a report saved while this
+    # request runs is picked up by the next poll, not lost.
+    now = datetime.utcnow()
+
+    since = _parse_since(request.args.get("since"))
+
+    if since is None:
+        try:
+            hours = float(request.args.get("hours", LIVE_DEFAULT_HOURS))
+        except (TypeError, ValueError):
+            hours = LIVE_DEFAULT_HOURS
+
+        hours = min(max(hours, 1.0), 24 * 365)
+        since = now - timedelta(hours=hours)
+        incremental = False
+    else:
+        incremental = True
+
+    complaints = (
+        Complaint.query
+        .filter(
+            Complaint.latitude.isnot(None),
+            Complaint.longitude.isnot(None),
+            Complaint.created_at > since,
+        )
+        .order_by(Complaint.created_at.desc())
+        .limit(LIVE_MAX_RESULTS)
+        .all()
+    )
 
     return jsonify({
         "type": "FeatureCollection",
-        "features": features,
+        "features": [
+            _public_report_feature(complaint, now)
+            for complaint in complaints
+        ],
+        "server_time": _utc_iso(now),
+        "incremental": incremental,
     })
+
+
+# ============================================================
+# GET /api/safety/crime-points
+# ============================================================
+#
+# Kept for older app builds. Same public-safe output as
+# /live-reports (no description or complaint id).
+
+@safety_bp.route("/crime-points", methods=["GET"])
+def get_crime_points():
+    return get_live_reports()
+
+
 # ============================================================
 # GET /api/safety/historical-crime-points
-# Returns historical crime locations as GeoJSON.
 # ============================================================
+#
+# One point per district, using that district's most recent
+# year in the dataset. (Returning every year stacked the same
+# district on top of itself and inflated the cluster counts.)
 
 @safety_bp.route("/historical-crime-points", methods=["GET"])
 def get_historical_crime_points():
@@ -874,9 +997,23 @@ def get_historical_crime_points():
         CrimeDistrict.year > 0,
     ).all()
 
-    features = []
+    latest = {}
 
     for row in rows:
+        key = (row.state.strip().lower(), row.district.strip().lower())
+        current = latest.get(key)
+
+        if current is None or row.year > current.year:
+            latest[key] = row
+
+    features = []
+    max_total = max(
+        [(row.total_crimes or 0) for row in latest.values()] or [0]
+    )
+
+    for row in latest.values():
+        total = row.total_crimes or 0
+
         features.append({
             "type": "Feature",
             "geometry": {
@@ -891,12 +1028,15 @@ def get_historical_crime_points():
                 "district": row.district,
                 "state": row.state,
                 "year": row.year,
-                "total_crimes": row.total_crimes or 0,
-                "weight": row.total_crimes or 0,
+                "total_crimes": total,
+                # 0..1, relative to the worst district, so the
+                # app can colour and size points consistently.
+                "intensity": round(total / max_total, 4) if max_total else 0,
             },
         })
 
     return jsonify({
         "type": "FeatureCollection",
         "features": features,
+        "max_total_crimes": max_total,
     })

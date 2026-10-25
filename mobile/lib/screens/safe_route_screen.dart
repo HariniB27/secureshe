@@ -1,11 +1,23 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart' as geo;
-import 'package:http/http.dart' as http;
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
+import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
+import '../services/live_reports_feed.dart';
+import '../services/location_service.dart';
+import '../services/routing_service.dart';
+import '../services/safety_api_service.dart';
+import '../widgets/map_widgets.dart';
+
+/// Search a destination, get walking or driving routes, and see which one
+/// passes through safer areas.
+///
+/// Each route is checked against the safety API at points along the way.
+/// While a route is on screen, new live reports near it trigger a warning and
+/// the routes are re-checked, so the "Safest" pick stays current.
 class SafeRouteScreen extends StatefulWidget {
   const SafeRouteScreen({super.key});
 
@@ -13,931 +25,712 @@ class SafeRouteScreen extends StatefulWidget {
   State<SafeRouteScreen> createState() => _SafeRouteScreenState();
 }
 
-class _SafeRouteScreenState extends State<SafeRouteScreen> {
-  mapbox.MapboxMap? _map;
+class _SafeRouteScreenState extends State<SafeRouteScreen>
+    with WidgetsBindingObserver {
+  static const _indiaCenter = LatLng(22.5, 79.0);
 
-  geo.Position? _userPosition;
+  /// Points sampled per route when checking safety.
+  static const _samplesPerRoute = 20;
 
-  final TextEditingController _destinationController =
-      TextEditingController();
+  /// A new report this close to your route triggers a warning.
+  static const _routeAlertMetres = 300.0;
 
-  bool _loadingLocation = true;
-  bool _searching = false;
+  final _mapController = MapController();
+  final _routing = RoutingService();
+  final _safety = SafetyApiService();
+  final _feed = LiveReportsFeed();
+  final _distance = const Distance();
+  final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
 
+  StreamSubscription<Position>? _positionSub;
+  Timer? _searchDebounce;
+  bool _mapReady = false;
+
+  LatLng? _me;
+  LatLng? _customStart;
+  String? _locationProblem;
+
+  TravelMode _mode = TravelMode.walk;
+  List<PlaceResult> _suggestions = [];
+  PlaceResult? _destination;
+
+  List<RouteOption> _routes = [];
+  int _selected = 0;
+  bool _loadingRoutes = false;
+  bool _scoring = false;
   String? _error;
 
-  String? _destinationName;
-
-  double? _routeDistanceKm;
-  double? _routeDurationMinutes;
-
-  List<List<double>> _routeCoordinates = [];
-
-  static const String accessToken =
-      String.fromEnvironment('ACCESS_TOKEN');
+  LatLng? get _start => _customStart ?? _me;
 
   @override
   void initState() {
     super.initState();
-    _getCurrentLocation();
+    WidgetsBinding.instance.addObserver(this);
+    _feed.addListener(_onFeedChanged);
+    _feed.start();
+    _startLocation();
   }
 
   @override
   void dispose() {
-    _destinationController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _positionSub?.cancel();
+    _searchDebounce?.cancel();
+    _feed.removeListener(_onFeedChanged);
+    _feed.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
-  // ============================================================
-  // MAP CREATED
-  // ============================================================
-
-  void _onMapCreated(mapbox.MapboxMap map) {
-    _map = map;
-
-    _moveToUserLocation();
-  }
-
-  // ============================================================
-  // GET USER LOCATION
-  // ============================================================
-
-  Future<void> _getCurrentLocation() async {
-    try {
-      setState(() {
-        _loadingLocation = true;
-        _error = null;
-      });
-
-      final serviceEnabled =
-          await geo.Geolocator.isLocationServiceEnabled();
-
-      if (!serviceEnabled) {
-        throw Exception(
-          'Location services are disabled.',
-        );
-      }
-
-      geo.LocationPermission permission =
-          await geo.Geolocator.checkPermission();
-
-      if (permission == geo.LocationPermission.denied) {
-        permission =
-            await geo.Geolocator.requestPermission();
-      }
-
-      if (permission == geo.LocationPermission.denied) {
-        throw Exception(
-          'Location permission was denied.',
-        );
-      }
-
-      if (permission ==
-          geo.LocationPermission.deniedForever) {
-        throw Exception(
-          'Location permission is permanently denied.',
-        );
-      }
-
-      final position =
-          await geo.Geolocator.getCurrentPosition(
-        locationSettings: const geo.LocationSettings(
-          accuracy: geo.LocationAccuracy.high,
-          timeLimit: Duration(seconds: 15),
-        ),
-      );
-
-      if (!mounted) return;
-
-      setState(() {
-        _userPosition = position;
-        _loadingLocation = false;
-      });
-
-      await _moveToUserLocation();
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        _loadingLocation = false;
-        _error = e.toString();
-      });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _feed.start();
+      _positionSub?.resume();
+    } else if (state == AppLifecycleState.paused) {
+      _feed.stop();
+      _positionSub?.pause();
     }
   }
 
-  // ============================================================
-  // MOVE MAP TO USER
-  // ============================================================
-
-  Future<void> _moveToUserLocation() async {
-    final position = _userPosition;
-    final map = _map;
-
-    if (position == null || map == null) {
-      return;
-    }
-
-    await map.setCamera(
-      mapbox.CameraOptions(
-        center: mapbox.Point(
-          coordinates: mapbox.Position(
-            position.longitude,
-            position.latitude,
-          ),
-        ),
-        zoom: 15.0,
-      ),
-    );
-  }
-
-  // ============================================================
-  // SEARCH DESTINATION
-  // ============================================================
-
-  Future<List<double>?> _searchDestination(
-    String query,
-  ) async {
-    if (accessToken.isEmpty) {
-      throw Exception(
-        'Mapbox access token is missing.',
-      );
-    }
-
-    final user = _userPosition;
-
-    String proximity = '';
-
-    if (user != null) {
-      proximity =
-          '&proximity=${user.longitude},${user.latitude}';
-    }
-
-    final url = Uri.parse(
-      'https://api.mapbox.com/search/searchbox/v1/forward'
-      '?q=${Uri.encodeComponent(query)}'
-      '&limit=1'
-      '&language=en'
-      '$proximity'
-      '&access_token=$accessToken',
-    );
-
-    final response = await http.get(url);
-
-    if (response.statusCode != 200) {
-      throw Exception(
-        'Destination search failed: ${response.statusCode}',
-      );
-    }
-
-    final data =
-        jsonDecode(response.body) as Map<String, dynamic>;
-
-    final features =
-        data['features'] as List<dynamic>?;
-
-    if (features == null || features.isEmpty) {
-      throw Exception(
-        'Destination not found. Try entering a more specific place.',
-      );
-    }
-
-    final feature =
-        features.first as Map<String, dynamic>;
-
-    final geometry =
-        feature['geometry'] as Map<String, dynamic>;
-
-    final coordinates =
-        geometry['coordinates'] as List<dynamic>;
-
-    final properties =
-        feature['properties'] as Map<String, dynamic>?;
-
-    String name = query;
-
-    if (properties != null) {
-      name =
-          properties['name_preferred']?.toString() ??
-              properties['name']?.toString() ??
-              properties['full_address']?.toString() ??
-              query;
-    }
-
-    _destinationName = name;
-
-    return [
-      (coordinates[0] as num).toDouble(),
-      (coordinates[1] as num).toDouble(),
-    ];
-  }
-
-  // ============================================================
-  // GET ROUTE FROM MAPBOX DIRECTIONS
-  // ============================================================
-
-  Future<Map<String, dynamic>> _getRoute(
-    List<double> destination,
-  ) async {
-    if (accessToken.isEmpty) {
-      throw Exception(
-        'Mapbox access token is missing.',
-      );
-    }
-
-    final user = _userPosition;
-
-    if (user == null) {
-      throw Exception(
-        'Current location is not available.',
-      );
-    }
-
-    final origin =
-        '${user.longitude},${user.latitude}';
-
-    final destinationString =
-        '${destination[0]},${destination[1]}';
-
-    final coordinates =
-        '$origin;$destinationString';
-
-    final url = Uri.parse(
-      'https://api.mapbox.com/directions/v5/mapbox/driving/'
-      '$coordinates'
-      '?alternatives=true'
-      '&geometries=geojson'
-      '&overview=full'
-      '&steps=true'
-      '&access_token=$accessToken',
-    );
-
-    final response = await http.get(url);
-
-    if (response.statusCode != 200) {
-      throw Exception(
-        'Route request failed: ${response.statusCode}',
-      );
-    }
-
-    final data =
-        jsonDecode(response.body) as Map<String, dynamic>;
-
-    if (data['code'] != 'Ok') {
-      throw Exception(
-        'Mapbox could not find a route.',
-      );
-    }
-
-    final routes =
-        data['routes'] as List<dynamic>?;
-
-    if (routes == null || routes.isEmpty) {
-      throw Exception(
-        'No route was found.',
-      );
-    }
-
-    return routes.first as Map<String, dynamic>;
-  }
-
-  // ============================================================
-  // FIND ROUTE
-  // ============================================================
-
-  Future<void> _findRoute() async {
-    final query =
-        _destinationController.text.trim();
-
-    if (query.isEmpty) {
-      _showMessage(
-        'Please enter a destination.',
-      );
-      return;
-    }
-
-    if (_userPosition == null) {
-      _showMessage(
-        'Your current location is still being detected.',
-      );
-      return;
-    }
-
-    try {
-      setState(() {
-        _searching = true;
-        _error = null;
-      });
-
-      // --------------------------------------------------------
-      // STEP 1: SEARCH DESTINATION
-      // --------------------------------------------------------
-
-      final destination =
-          await _searchDestination(query);
-
-      if (destination == null) {
-        throw Exception(
-          'Could not find destination.',
-        );
-      }
-
-      // --------------------------------------------------------
-      // STEP 2: GET ROAD ROUTE
-      // --------------------------------------------------------
-
-      final route =
-          await _getRoute(destination);
-
-      // --------------------------------------------------------
-      // STEP 3: READ DISTANCE
-      // --------------------------------------------------------
-
-      final distanceMeters =
-          (route['distance'] as num).toDouble();
-
-      final durationSeconds =
-          (route['duration'] as num).toDouble();
-
-      final geometry =
-          route['geometry'] as Map<String, dynamic>;
-
-      final coordinates =
-          geometry['coordinates'] as List<dynamic>;
-
-      final routePoints =
-          coordinates.map<List<double>>((point) {
-        final p = point as List<dynamic>;
-
-        return [
-          (p[0] as num).toDouble(),
-          (p[1] as num).toDouble(),
-        ];
-      }).toList();
-
-      if (!mounted) return;
-
-      setState(() {
-        _routeCoordinates = routePoints;
-
-        _routeDistanceKm =
-            distanceMeters / 1000.0;
-
-        _routeDurationMinutes =
-            durationSeconds / 60.0;
-
-        _searching = false;
-      });
-
-      // --------------------------------------------------------
-      // STEP 4: DRAW ROUTE
-      // --------------------------------------------------------
-
-      await _drawRoute();
-
-      // --------------------------------------------------------
-      // STEP 5: FIT MAP TO ROUTE
-      // --------------------------------------------------------
-
-      await _fitRouteToScreen();
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        _searching = false;
-        _error = e.toString();
-      });
-    }
-  }
-
-  // ============================================================
-  // DRAW ROUTE
-  // ============================================================
-
-  Future<void> _drawRoute() async {
-    final map = _map;
-
-    if (map == null || _routeCoordinates.isEmpty) {
-      return;
-    }
-
-    const sourceId = 'safe-route-source';
-    const layerId = 'safe-route-layer';
-
-    try {
-      await map.style.removeStyleLayer(layerId);
-    } catch (_) {}
-
-    try {
-      await map.style.removeStyleSource(sourceId);
-    } catch (_) {}
-
-    final feature = {
-      'type': 'Feature',
-      'geometry': {
-        'type': 'LineString',
-        'coordinates': _routeCoordinates,
-      },
-      'properties': {},
-    };
-
-    final geoJson = {
-      'type': 'FeatureCollection',
-      'features': [feature],
-    };
-
-    final source = mapbox.GeoJsonSource(
-      id: sourceId,
-      data: jsonEncode(geoJson),
-    );
-
-    await map.style.addSource(source);
-
-    final layer = mapbox.LineLayer(
-      id: layerId,
-      sourceId: sourceId,
-    );
-
-    layer.lineColor =
-        Colors.green.toARGB32();
-
-    layer.lineWidth = 6.0;
-
-    layer.lineOpacity = 0.9;
-
-    await map.style.addLayer(layer);
-  }
-
-  // ============================================================
-  // FIT MAP TO ROUTE
-  // ============================================================
-
-  Future<void> _fitRouteToScreen() async {
-    final map = _map;
-
-    if (map == null || _routeCoordinates.isEmpty) {
-      return;
-    }
-
-    double minLng = _routeCoordinates.first[0];
-    double maxLng = _routeCoordinates.first[0];
-    double minLat = _routeCoordinates.first[1];
-    double maxLat = _routeCoordinates.first[1];
-
-    for (final point in _routeCoordinates) {
-      minLng = math.min(minLng, point[0]);
-      maxLng = math.max(maxLng, point[0]);
-      minLat = math.min(minLat, point[1]);
-      maxLat = math.max(maxLat, point[1]);
-    }
-
-    final centerLng = (minLng + maxLng) / 2;
-    final centerLat = (minLat + maxLat) / 2;
-
-    final lngDifference = (maxLng - minLng).abs();
-    final latDifference = (maxLat - minLat).abs();
-
-    final largestDifference =
-        math.max(lngDifference, latDifference);
-
-    double zoom;
-
-    if (largestDifference < 0.005) {
-      zoom = 15.0;
-    } else if (largestDifference < 0.01) {
-      zoom = 14.0;
-    } else if (largestDifference < 0.03) {
-      zoom = 13.0;
-    } else if (largestDifference < 0.06) {
-      zoom = 12.0;
-    } else if (largestDifference < 0.12) {
-      zoom = 11.0;
-    } else if (largestDifference < 0.25) {
-      zoom = 10.0;
-    } else {
-      zoom = 9.0;
-    }
-
-    await map.setCamera(
-      mapbox.CameraOptions(
-        center: mapbox.Point(
-          coordinates: mapbox.Position(
-            centerLng,
-            centerLat,
-          ),
-        ),
-        zoom: zoom,
-      ),
-    );
-  }
-
-  // ============================================================
-  // MESSAGE
-  // ============================================================
-
-  void _showMessage(String message) {
+  // ------------------------------------------------------------------
+  // Location
+  // ------------------------------------------------------------------
+
+  Future<void> _startLocation() async {
+    final problem = await LocationService.ensurePermission();
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
+    if (problem != null) {
+      setState(() => _locationProblem =
+          '$problem Long-press the map to choose a start point.');
+      return;
+    }
+
+    setState(() => _locationProblem = null);
+    await _positionSub?.cancel();
+    _positionSub = LocationService.positionStream().listen((position) {
+      if (!mounted) return;
+      final firstFix = _me == null;
+      final here = LatLng(position.latitude, position.longitude);
+      setState(() => _me = here);
+      if (firstFix && _mapReady && _routes.isEmpty) {
+        _mapController.move(here, 15);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Search
+  // ------------------------------------------------------------------
+
+  void _onQueryChanged(String text) {
+    _searchDebounce?.cancel();
+
+    if (text.trim().length < 3) {
+      setState(() => _suggestions = []);
+      return;
+    }
+
+    // Wait until typing pauses. The free search server allows about one
+    // request per second.
+    _searchDebounce = Timer(const Duration(milliseconds: 700), () async {
+      try {
+        final results =
+            await _routing.searchPlaces(text.trim(), near: _start);
+        if (!mounted || _searchController.text.trim() != text.trim()) return;
+        setState(() => _suggestions = results);
+      } catch (e) {
+        debugPrint('Place search failed: $e');
+      }
+    });
+  }
+
+  Future<void> _chooseDestination(PlaceResult place) async {
+    _searchFocus.unfocus();
+    _searchController.text = place.name;
+
+    setState(() {
+      _destination = place;
+      _suggestions = [];
+    });
+
+    await _findRoutes();
+  }
+
+  // ------------------------------------------------------------------
+  // Routes
+  // ------------------------------------------------------------------
+
+  Future<void> _findRoutes() async {
+    final start = _start;
+    final destination = _destination;
+    if (destination == null) return;
+
+    if (start == null) {
+      setState(() => _error = _locationProblem ??
+          'Still finding your location. You can long-press the map to set a start point.');
+      return;
+    }
+
+    setState(() {
+      _loadingRoutes = true;
+      _error = null;
+      _routes = [];
+    });
+
+    try {
+      final routes =
+          await _routing.getRoutes(start, destination.point, _mode);
+      if (!mounted) return;
+
+      if (routes.isEmpty) throw Exception('No route found between these places.');
+
+      setState(() {
+        // At most 3 options, which also keeps the safety check under the
+        // backend's 200-point limit.
+        _routes = routes.take(3).toList();
+        _selected = 0;
+        _loadingRoutes = false;
+      });
+
+      _fitRoutes();
+      await _scoreRoutes();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingRoutes = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  /// Checks every route at evenly spaced points and picks the safest one.
+  Future<void> _scoreRoutes() async {
+    if (_routes.isEmpty || _scoring) return;
+    setState(() => _scoring = true);
+
+    final samples = <List<LatLng>>[
+      for (final route in _routes) _sample(route.points, _samplesPerRoute),
+    ];
+
+    try {
+      final results = await _safety.fetchScoresBatch(
+        samples.expand((s) => s).toList(),
+      );
+      if (!mounted) return;
+
+      var offset = 0;
+      for (var i = 0; i < _routes.length; i++) {
+        final scores = results
+            .sublist(offset, offset + samples[i].length)
+            .map((r) => r.score)
+            .toList();
+        offset += samples[i].length;
+
+        _routes[i].averageScore =
+            (scores.reduce((a, b) => a + b) / scores.length).round();
+        _routes[i].lowestScore = scores.reduce(math.min);
+      }
+
+      // Pre-select the safest route.
+      setState(() => _selected = _safestIndex ?? 0);
+    } catch (e) {
+      debugPrint('Route safety check failed: $e');
+      if (mounted) {
+        _snack('Could not check route safety. Showing routes without scores.');
+      }
+    } finally {
+      if (mounted) setState(() => _scoring = false);
+    }
+  }
+
+  List<LatLng> _sample(List<LatLng> points, int count) {
+    if (points.length <= count) return points;
+    final step = (points.length - 1) / (count - 1);
+    return [for (var i = 0; i < count; i++) points[(i * step).round()]];
+  }
+
+  void _fitRoutes() {
+    if (!_mapReady || _routes.isEmpty) return;
+    final all = _routes.expand((r) => r.points).toList();
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds.fromPoints(all),
+        padding: const EdgeInsets.fromLTRB(40, 200, 40, 220),
       ),
     );
   }
 
-  // ============================================================
-  // BUILD
-  // ============================================================
+  /// Highest average safety. Routes within 2 points of each other count as
+  /// equally safe, and the quicker one wins.
+  int? get _safestIndex {
+    if (_routes.isEmpty || _routes.any((r) => r.averageScore == null)) {
+      return null;
+    }
+
+    var best = 0;
+    for (var i = 1; i < _routes.length; i++) {
+      final diff = _routes[i].averageScore! - _routes[best].averageScore!;
+      final quicker =
+          _routes[i].durationSeconds < _routes[best].durationSeconds;
+      if (diff > 2 || (diff.abs() <= 2 && quicker)) best = i;
+    }
+    return best;
+  }
+
+  int get _fastestIndex {
+    var best = 0;
+    for (var i = 1; i < _routes.length; i++) {
+      if (_routes[i].durationSeconds < _routes[best].durationSeconds) best = i;
+    }
+    return best;
+  }
+
+  // ------------------------------------------------------------------
+  // Live reports along the route
+  // ------------------------------------------------------------------
+
+  void _onFeedChanged() {
+    if (!mounted) return;
+    setState(() {});
+
+    final fresh = _feed.latestNew;
+    if (fresh.isEmpty || _routes.isEmpty) return;
+
+    final route = _routes[_selected];
+    final nearRoute = fresh.any(
+      (report) => route.points.any(
+        (p) => _distance.distance(p, report.point) <= _routeAlertMetres,
+      ),
+    );
+
+    if (nearRoute) {
+      _snack('A new incident was reported near your route. Re-checking…',
+          danger: true);
+      _scoreRoutes();
+    }
+  }
+
+  void _snack(String message, {bool danger = false}) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: danger ? Colors.red.shade700 : null,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+  }
+
+  // ------------------------------------------------------------------
+  // Build
+  // ------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
+    final me = _me;
+    final start = _start;
+    final destination = _destination;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Safe Route',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('Safe Route')),
       body: Stack(
         children: [
-          // ----------------------------------------------------
-          // MAP
-          // ----------------------------------------------------
-
-          mapbox.MapWidget(
-            viewport: mapbox.CameraViewportState(
-              center: mapbox.Point(
-                coordinates: mapbox.Position(
-                  77.5946,
-                  12.9716,
-                ),
-              ),
-              zoom: 5.0,
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _indiaCenter,
+              initialZoom: 4.6,
+              minZoom: 3,
+              maxZoom: 18,
+              onMapReady: () {
+                _mapReady = true;
+                final here = _me;
+                if (here != null) _mapController.move(here, 15);
+              },
+              onTap: (_, __) => _searchFocus.unfocus(),
+              onLongPress: (_, point) {
+                setState(() => _customStart = point);
+                _snack('Start point set. Tap “Use my location” to undo.');
+                if (_destination != null) _findRoutes();
+              },
             ),
-            onMapCreated: _onMapCreated,
+            children: [
+              osmTileLayer(),
+              PolylineLayer(polylines: _polylines()),
+              MarkerLayer(
+                markers: [
+                  for (final report in _feed.reports)
+                    Marker(
+                      point: report.point,
+                      width: 22,
+                      height: 22,
+                      child: LiveReportBubble(
+                        count: 1,
+                        hasRecent: report.age != null && report.age!.inMinutes < 60,
+                      ),
+                    ),
+                  if (_customStart != null)
+                    Marker(
+                      point: _customStart!,
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.topCenter,
+                      child: const Icon(Icons.trip_origin,
+                          color: Colors.green, size: 30),
+                    ),
+                  if (destination != null)
+                    Marker(
+                      point: destination.point,
+                      width: 40,
+                      height: 40,
+                      alignment: Alignment.topCenter,
+                      child: const Icon(Icons.location_on,
+                          color: Colors.red, size: 40),
+                    ),
+                  if (me != null) userLocationMarker(me),
+                ],
+              ),
+              osmAttribution(),
+            ],
           ),
 
-          // ----------------------------------------------------
-          // SEARCH PANEL
-          // ----------------------------------------------------
-
+          // Search panel
           SafeArea(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: Container(
-                margin: const EdgeInsets.all(14),
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius:
-                      BorderRadius.circular(18),
-                  boxShadow: const [
-                    BoxShadow(
-                      blurRadius: 15,
-                      offset: Offset(0, 5),
-                      color: Colors.black26,
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // CURRENT LOCATION
-
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.my_location,
-                          color: Colors.green,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            _loadingLocation
-                                ? 'Finding your location...'
-                                : 'Your current location',
-                            style: const TextStyle(
-                              fontWeight:
-                                  FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed:
-                              _getCurrentLocation,
-                          icon: const Icon(
-                            Icons.refresh,
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    // DESTINATION
-
-                    TextField(
-                      controller:
-                          _destinationController,
-                      textInputAction:
-                          TextInputAction.search,
-                      onSubmitted: (_) =>
-                          _findRoute(),
-                      decoration: InputDecoration(
-                        prefixIcon:
-                            const Icon(
-                          Icons.location_on,
-                          color: Colors.red,
-                        ),
-                        hintText:
-                            'Enter your destination',
-                        filled: true,
-                        fillColor:
-                            Colors.grey.shade100,
-                        border:
-                            OutlineInputBorder(
-                          borderRadius:
-                              BorderRadius.circular(
-                            14,
-                          ),
-                          borderSide:
-                              BorderSide.none,
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    // FIND ROUTE BUTTON
-
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child:
-                          ElevatedButton.icon(
-                        onPressed:
-                            _searching
-                                ? null
-                                : _findRoute,
-                        icon: _searching
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color:
-                                      Colors.white,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.directions,
-                              ),
-                        label: Text(
-                          _searching
-                              ? 'Finding route...'
-                              : 'Find Route',
-                        ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  _searchPanel(start),
+                  if (_suggestions.isNotEmpty) _suggestionList(),
+                  if (_suggestions.isEmpty) ...[
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: LiveStatusPill(
+                        lastUpdated: _feed.lastUpdated,
+                        error: _feed.error,
                       ),
                     ),
                   ],
-                ),
+                ],
               ),
             ),
           ),
 
-          // ----------------------------------------------------
-          // LOCATION BUTTON
-          // ----------------------------------------------------
-
-          Positioned(
-            right: 16,
-            bottom: 170,
-            child: FloatingActionButton(
-              heroTag:
-                  'safeRouteLocation',
-              onPressed:
-                  _moveToUserLocation,
-              child: const Icon(
-                Icons.my_location,
-              ),
-            ),
-          ),
-
-          // ----------------------------------------------------
-          // ROUTE INFORMATION
-          // ----------------------------------------------------
-
-          if (_routeDistanceKm != null)
-            Positioned(
-              left: 14,
-              right: 14,
-              bottom: 14,
-              child: _buildRouteCard(),
-            ),
-
-          // ----------------------------------------------------
-          // ERROR
-          // ----------------------------------------------------
-
+          // Route choices / errors
           if (_error != null)
             Positioned(
-              left: 14,
-              right: 14,
-              bottom: 14,
+              left: 12,
+              right: 12,
+              bottom: 16,
               child: Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.error_outline,
-                        color: Colors.red,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          _error!,
-                          style:
-                              const TextStyle(
-                            color: Colors.red,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () {
-                          setState(() {
-                            _error = null;
-                          });
-                        },
-                        icon:
-                            const Icon(Icons.close),
-                      ),
-                    ],
+                color: Colors.red.shade50,
+                child: ListTile(
+                  leading: const Icon(Icons.error_outline, color: Colors.red),
+                  title: Text(_error!),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => setState(() => _error = null),
                   ),
                 ),
               ),
-            ),
-
-          // ----------------------------------------------------
-          // LOCATION LOADING
-          // ----------------------------------------------------
-
-          if (_loadingLocation)
-            const Center(
+            )
+          else if (_loadingRoutes)
+            const Positioned(
+              left: 12,
+              right: 12,
+              bottom: 16,
               child: Card(
-                child: Padding(
-                  padding:
-                      EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 16,
+                child: ListTile(
+                  leading: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  child: Row(
-                    mainAxisSize:
-                        MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text(
-                        'Finding your location...',
-                      ),
-                    ],
-                  ),
+                  title: Text('Finding routes…'),
                 ),
               ),
+            )
+          else if (_routes.isNotEmpty)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 12,
+              child: _routeCards(),
             ),
         ],
       ),
     );
   }
 
-  // ============================================================
-  // ROUTE CARD
-  // ============================================================
+  List<Polyline> _polylines() {
+    if (_routes.isEmpty) return const [];
 
-  Widget _buildRouteCard() {
-    final distance =
-        _routeDistanceKm ?? 0;
+    final lines = <Polyline>[];
 
-    final duration =
-        _routeDurationMinutes ?? 0;
+    // Other options first (grey), so the chosen one is drawn on top.
+    for (var i = 0; i < _routes.length; i++) {
+      if (i == _selected) continue;
+      lines.add(Polyline(
+        points: _routes[i].points,
+        strokeWidth: 5,
+        color: Colors.grey.withValues(alpha: 0.7),
+      ));
+    }
 
-    return Card(
-      elevation: 8,
-      shape: RoundedRectangleBorder(
-        borderRadius:
-            BorderRadius.circular(18),
-      ),
+    final chosen = _routes[_selected];
+    final color = chosen.averageScore == null
+        ? Colors.blue
+        : scoreColor(chosen.averageScore!);
+
+    lines.add(Polyline(
+      points: chosen.points,
+      strokeWidth: 7,
+      color: color,
+      borderStrokeWidth: 2,
+      borderColor: Colors.white,
+    ));
+
+    return lines;
+  }
+
+  Widget _searchPanel(LatLng? start) {
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(16),
+      color: Colors.white,
       child: Padding(
-        padding:
-            const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
-                Container(
-                  width: 45,
-                  height: 45,
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade100,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.shield,
-                    color:
-                        Colors.green.shade700,
-                  ),
+                Icon(
+                  _customStart != null ? Icons.trip_origin : Icons.my_location,
+                  color: Colors.green,
+                  size: 20,
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _destinationName ??
-                        'Route',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight:
-                          FontWeight.bold,
-                    ),
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
+                    _customStart != null
+                        ? 'From: chosen point on map'
+                        : start != null
+                            ? 'From: your location'
+                            : (_locationProblem ?? 'Finding your location…'),
+                    style: const TextStyle(fontSize: 13),
                   ),
                 ),
+                if (_customStart != null)
+                  TextButton(
+                    onPressed: () {
+                      setState(() => _customStart = null);
+                      if (_destination != null) _findRoutes();
+                    },
+                    child: const Text('Use my location'),
+                  ),
               ],
             ),
-
-            const SizedBox(height: 14),
-
-            Row(
-              children: [
-                const Icon(
-                  Icons.route,
-                  size: 20,
-                  color: Colors.green,
+            const SizedBox(height: 8),
+            TextField(
+              controller: _searchController,
+              focusNode: _searchFocus,
+              textInputAction: TextInputAction.search,
+              onChanged: _onQueryChanged,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.location_on, color: Colors.red),
+                hintText: 'Where are you going?',
+                isDense: true,
+                filled: true,
+                fillColor: Colors.grey.shade100,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  '${distance.toStringAsFixed(1)} km',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(width: 20),
-                const Icon(
-                  Icons.access_time,
-                  size: 20,
-                  color: Colors.blue,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '${duration.round()} min',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight:
-                        FontWeight.bold,
-                  ),
-                ),
-              ],
+                suffixIcon: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {
+                            _suggestions = [];
+                            _destination = null;
+                            _routes = [];
+                          });
+                        },
+                      ),
+              ),
             ),
-
-            const SizedBox(height: 10),
-
-            Row(
-              children: [
-                Icon(
-                  Icons.shield,
-                  size: 18,
-                  color:
-                      Colors.green.shade700,
+            const SizedBox(height: 8),
+            SegmentedButton<TravelMode>(
+              segments: const [
+                ButtonSegment(
+                  value: TravelMode.walk,
+                  icon: Icon(Icons.directions_walk),
+                  label: Text('Walk'),
                 ),
-                const SizedBox(width: 7),
-                Text(
-                  'Route found',
-                  style: TextStyle(
-                    color:
-                        Colors.green.shade700,
-                    fontWeight:
-                        FontWeight.w600,
-                  ),
+                ButtonSegment(
+                  value: TravelMode.drive,
+                  icon: Icon(Icons.directions_car),
+                  label: Text('Drive'),
                 ),
               ],
+              selected: {_mode},
+              onSelectionChanged: (selection) {
+                setState(() => _mode = selection.first);
+                if (_destination != null) _findRoutes();
+              },
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _suggestionList() {
+    return Card(
+      margin: const EdgeInsets.only(top: 6),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 260),
+        child: ListView.separated(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          itemCount: _suggestions.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (_, i) {
+            final place = _suggestions[i];
+            return ListTile(
+              dense: true,
+              leading: const Icon(Icons.place_outlined),
+              title: Text(place.name),
+              subtitle: Text(
+                place.detail,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => _chooseDestination(place),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _routeCards() {
+    final safest = _safestIndex;
+    final fastest = _fastestIndex;
+
+    return SizedBox(
+      height: 150,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        itemCount: _routes.length,
+        itemBuilder: (_, i) {
+          final route = _routes[i];
+          final selected = i == _selected;
+          final score = route.averageScore;
+
+          return GestureDetector(
+            onTap: () => setState(() => _selected = i),
+            child: Container(
+              width: 230,
+              margin: const EdgeInsets.only(right: 10),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: selected
+                      ? (score == null ? Colors.blue : scoreColor(score))
+                      : Colors.transparent,
+                  width: 3,
+                ),
+                boxShadow: const [
+                  BoxShadow(blurRadius: 8, color: Colors.black26),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 6,
+                    children: [
+                      if (safest == i) _tag('Safest', Colors.green.shade700),
+                      if (fastest == i) _tag('Fastest', Colors.blue.shade700),
+                      if (safest != i && fastest != i)
+                        _tag('Option ${i + 1}', Colors.grey.shade700),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${route.durationMinutes.round()} min · '
+                    '${route.distanceKm.toStringAsFixed(1)} km',
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (score == null)
+                    Text(
+                      _scoring ? 'Checking safety…' : 'Safety not checked',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    )
+                  else ...[
+                    Row(
+                      children: [
+                        Icon(Icons.shield, size: 18, color: scoreColor(score)),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Safety $score/100 · ${scoreLabel(score)}',
+                          style: TextStyle(
+                            color: scoreColor(score),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (route.lowestScore != null &&
+                        route.lowestScore! < 40)
+                      Text(
+                        'Passes a high-risk stretch (${route.lowestScore})',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.red.shade700,
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _tag(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
         ),
       ),
     );

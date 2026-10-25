@@ -7,13 +7,10 @@ import 'screens/register_screen.dart';
 import 'state/auth_state.dart';
 import 'theme.dart';
 import 'screens/home_screen.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+import 'screens/safe_route_screen.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  MapboxOptions.setAccessToken(
-    const String.fromEnvironment('ACCESS_TOKEN'),
-  );
 
   runApp(
     ChangeNotifierProvider(
@@ -42,6 +39,7 @@ class SecureSheApp extends StatelessWidget {
         '/archive': (context) => const PlaceholderScreen(title: 'Archive'),
         '/sos': (context) => const PlaceholderScreen(title: 'SOS'),
         '/map': (context) => const SafetyMapScreen(),
+        '/safe-route': (context) => const SafeRouteScreen(),
       },
     );
   }
