@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../theme.dart';
+import '../widgets/map_widgets.dart';
+import '../widgets/ss_ui.dart';
+
 /// Lets the user pick a location by panning the map under a fixed center
 /// pin (the standard "drag the map, not the pin" pattern), then confirming.
 /// Returns the chosen [LatLng] via Navigator.pop, or null if cancelled.
@@ -22,9 +26,20 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   late LatLng _center = widget.initialCenter ?? _fallbackCenter;
 
   @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Set Location')),
+    return SSPage(
+      header: GlassHeader(
+        title: 'Set Location',
+        subtitle: 'Drag the map so the pin marks where it happened',
+        onBack: () => Navigator.of(context).pop(),
+      ),
+      safeBottom: false,
       body: Stack(
         alignment: Alignment.center,
         children: [
@@ -38,10 +53,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
               },
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.secureshe.mobile',
-              ),
+              themedTileLayer(context),
+              mapAttribution(context),
             ],
           ),
           // Fixed pin at screen center; the map pans underneath it. Offset
@@ -50,16 +63,17 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
           Transform.translate(
             offset: const Offset(0, -_pinSize / 2),
             child: const IgnorePointer(
-              child: Icon(Icons.location_on, color: Colors.red, size: _pinSize),
+              child: Icon(Icons.location_on_rounded, color: AppColors.primary, size: _pinSize),
             ),
           ),
           Positioned(
-            bottom: 24,
+            bottom: 24 + MediaQuery.of(context).padding.bottom,
             left: 24,
             right: 24,
-            child: ElevatedButton(
+            child: GradientButton(
+              label: 'Confirm Location',
+              icon: Icons.check_rounded,
               onPressed: () => Navigator.of(context).pop(_center),
-              child: const Text('Confirm Location'),
             ),
           ),
         ],

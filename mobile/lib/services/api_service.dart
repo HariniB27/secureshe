@@ -133,6 +133,9 @@ class ApiService {
     double? lat,
     double? lng,
     String? locationSource,
+    String? category,
+    bool anonymous = false,
+    List<({Uint8List bytes, String filename})> files = const [],
   }) {
     return authedRequest((token) async {
       final request = http.MultipartRequest(
@@ -140,7 +143,10 @@ class ApiService {
         Uri.parse('$baseUrl/api/complaints/submit'),
       )
         ..headers['Authorization'] = 'Bearer $token'
-        ..fields['description'] = description;
+        ..fields['description'] = description
+        ..fields['anonymous'] = anonymous ? 'true' : 'false';
+
+      if (category != null) request.fields['category'] = category;
 
       if (lat != null && lng != null) {
         request.fields['lat'] = lat.toString();
@@ -157,6 +163,13 @@ class ApiService {
             evidenceBytes,
             filename: evidenceFilename ?? 'evidence',
           ),
+        );
+      }
+
+      // Up to 5 files, each sent as another "evidence" part.
+      for (final file in files) {
+        request.files.add(
+          http.MultipartFile.fromBytes('evidence', file.bytes, filename: file.filename),
         );
       }
 
@@ -204,4 +217,140 @@ class ApiService {
       }),
     );
   }
+
+  // ------------------------------------------------------------------
+  // Account (added for the redesign)
+  // ------------------------------------------------------------------
+
+  static Map<String, String> _jsonHeaders(String token) => {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      };
+
+  /// GET /api/auth/me — the signed-in user's profile.
+  static Future<http.Response> getMe() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// PUT /api/auth/me — update name and/or phone.
+  static Future<http.Response> updateMe({String? name, String? phone}) =>
+      authedRequest(
+        (token) => http.put(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({
+            if (name != null) 'name': name,
+            if (phone != null) 'phone': phone,
+          }),
+        ),
+      );
+
+  /// POST /api/auth/change-password
+  static Future<http.Response> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/auth/change-password'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({
+            'current_password': currentPassword,
+            'new_password': newPassword,
+          }),
+        ),
+      );
+
+  /// DELETE /api/auth/me — permanently deletes the account.
+  static Future<http.Response> deleteAccount(String password) => authedRequest(
+        (token) => http.delete(
+          Uri.parse('$baseUrl/api/auth/me'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'password': password}),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Reports
+  // ------------------------------------------------------------------
+
+  /// GET /api/complaints/mine — your own reports, newest first.
+  static Future<http.Response> myComplaints() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/complaints/mine'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// GET /api/complaints/status/<id> — one of your reports.
+  static Future<http.Response> complaintStatus(String id) => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/complaints/status/$id'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Trusted circle and SOS (Sreshta's /api/sos endpoints)
+  // ------------------------------------------------------------------
+
+  static Future<http.Response> listContacts() => authedRequest(
+        (token) => http.get(
+          Uri.parse('$baseUrl/api/sos/contacts'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  static Future<http.Response> addContact({
+    required String name,
+    required String phone,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/sos/contacts'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'name': name, 'phone_number': phone}),
+        ),
+      );
+
+  static Future<http.Response> deleteContact(int id) => authedRequest(
+        (token) => http.delete(
+          Uri.parse('$baseUrl/api/sos/contacts/$id'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  static Future<http.Response> triggerSos({
+    required double latitude,
+    required double longitude,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/sos/trigger'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'latitude': latitude, 'longitude': longitude}),
+        ),
+      );
+
+  // ------------------------------------------------------------------
+  // Community flags
+  // ------------------------------------------------------------------
+
+  /// POST /api/safety/flags — kind is dark-street, harassment,
+  /// suspicious or safe-zone.
+  static Future<http.Response> addFlag({
+    required String kind,
+    required double lat,
+    required double lng,
+  }) =>
+      authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/safety/flags'),
+          headers: _jsonHeaders(token),
+          body: jsonEncode({'kind': kind, 'lat': lat, 'lng': lng}),
+        ),
+      );
 }

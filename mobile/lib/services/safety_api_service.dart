@@ -234,13 +234,30 @@ class SafetyApiService {
     );
   }
 
+  /// Community flags from the last [hours] hours.
+  Future<List<CommunityFlag>> fetchFlags({int hours = 24 * 7}) async {
+    final response = await http
+        .get(Uri.parse('$baseUrl/flags?hours=$hours'))
+        .timeout(_timeout);
+
+    if (response.statusCode != 200) {
+      throw Exception('Community flags failed: ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    return (data['features'] as List? ?? [])
+        .map((f) => CommunityFlag.fromFeature(Map<String, dynamic>.from(f as Map)))
+        .toList();
+  }
+
   /// Recent complaint locations for the live map layer.
   ///
   /// Pass the [LiveReportsPage.serverTime] from the previous call as
   /// [since] to get only the reports added after it.
-  Future<LiveReportsPage> fetchLiveReports({String? since}) async {
+  Future<LiveReportsPage> fetchLiveReports({String? since, int? hours}) async {
     final params = <String, String>{};
     if (since != null) params['since'] = since;
+    if (since == null && hours != null) params['hours'] = '$hours';
 
     final uri = Uri.parse('$baseUrl/live-reports')
         .replace(queryParameters: params.isEmpty ? null : params);
@@ -420,6 +437,50 @@ class RouteSafety {
       mainRoadPct: (json['main_road_pct'] as num?)?.toInt(),
       isolatedPct: (json['isolated_pct'] as num?)?.toInt(),
       litPct: (json['lit_pct'] as num?)?.toInt(),
+    );
+  }
+}
+
+
+/// A quick marker someone added from the map's "+" sheet.
+class CommunityFlag {
+  CommunityFlag({
+    required this.id,
+    required this.kind,
+    required this.point,
+    required this.reportedAt,
+  });
+
+  final int id;
+
+  /// dark-street, harassment, suspicious or safe-zone.
+  final String kind;
+  final LatLng point;
+  final DateTime? reportedAt;
+
+  bool get isSafe => kind == 'safe-zone';
+
+  String get label => switch (kind) {
+        'dark-street' => 'Dark street',
+        'harassment' => 'Harassment',
+        'suspicious' => 'Suspicious activity',
+        'safe-zone' => 'Safe zone',
+        _ => 'Flag',
+      };
+
+  factory CommunityFlag.fromFeature(Map<String, dynamic> feature) {
+    final coords = (feature['geometry'] as Map)['coordinates'] as List;
+    final props = Map<String, dynamic>.from(feature['properties'] as Map);
+    final reported = props['reported_at'] as String?;
+
+    return CommunityFlag(
+      id: (props['id'] as num).toInt(),
+      kind: props['kind'] as String? ?? '',
+      point: LatLng(
+        (coords[1] as num).toDouble(),
+        (coords[0] as num).toDouble(),
+      ),
+      reportedAt: reported == null ? null : DateTime.tryParse(reported),
     );
   }
 }

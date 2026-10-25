@@ -18,6 +18,9 @@ COMPLAINT_CATEGORIES = ('harassment', 'unsafe-area', 'suspicious')
 
 # The order a report moves through. The app draws its progress timeline
 # from this, so keep it in sync with STATUS_STEPS in report_status_screen.dart.
+# 5 IPFS CIDs (46 chars each) plus commas fit the 256-char ipfs_cid column.
+MAX_EVIDENCE = 5
+
 STATUS_FLOW = ('SUBMITTED', 'UNDER_REVIEW', 'INVESTIGATING', 'ACTION_TAKEN', 'RESOLVED')
 
 
@@ -76,20 +79,36 @@ def submit_complaint():
     ipfs_cid = None
     evidence_hash = None
 
-    evidence_file = request.files.get('evidence')
-    if evidence_file:
-        file_bytes = evidence_file.read()
-        evidence_hash = hashlib.sha256(file_bytes).hexdigest()
+    # Evidence: one or more files sent as "evidence" (up to MAX_EVIDENCE).
+    # Each is pinned to IPFS. The hash logged on-chain covers all of them:
+    # sha256 of the files' own sha256 hashes, in upload order. With a single
+    # file that is simply that file's hash, as before.
+    evidence_files = [f for f in request.files.getlist('evidence') if f]
+    if len(evidence_files) > MAX_EVIDENCE:
+        return jsonify({'error': f'At most {MAX_EVIDENCE} evidence files per report'}), 400
 
-        if PINATA_API_KEY and PINATA_SECRET_API_KEY:
+    cids = []
+    file_hashes = []
+    if evidence_files:
+        if not (PINATA_API_KEY and PINATA_SECRET_API_KEY):
+            return jsonify({'error': 'Pinata API keys not configured'}), 500
+
+        for evidence_file in evidence_files:
+            file_bytes = evidence_file.read()
+            file_hashes.append(hashlib.sha256(file_bytes).hexdigest())
             try:
-                ipfs_cid = upload_to_pinata(file_bytes, evidence_file.filename or 'evidence')
+                cids.append(upload_to_pinata(file_bytes, evidence_file.filename or 'evidence'))
             except requests.HTTPError as e:
                 return jsonify({'error': f'Pinata upload failed: {e.response.text}'}), 502
             except requests.RequestException as e:
                 return jsonify({'error': f'Pinata connection error: {str(e)}'}), 502
+
+        if len(file_hashes) == 1:
+            evidence_hash = file_hashes[0]
         else:
-            return jsonify({'error': 'Pinata API keys not configured'}), 500
+            evidence_hash = hashlib.sha256(''.join(file_hashes).encode()).hexdigest()
+        # Comma-separated so the existing single-CID column still works.
+        ipfs_cid = ','.join(cids)
     else:
         # No file — hash the description as a placeholder
         evidence_hash = hashlib.sha256(description.encode()).hexdigest()
@@ -128,7 +147,8 @@ def submit_complaint():
     }
     if ipfs_cid:
         response_data['ipfs_cid'] = ipfs_cid
-        response_data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{ipfs_cid}'
+        response_data['evidence'] = _evidence_list(ipfs_cid)
+        response_data['ipfs_url'] = response_data['evidence'][0]['url']
     if blockchain_tx:
         response_data['blockchain_tx'] = blockchain_tx
         response_data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{blockchain_tx}'
@@ -139,6 +159,13 @@ def submit_complaint():
         response_data['location_source'] = location_source
 
     return jsonify(response_data), 201
+
+
+def _evidence_list(ipfs_cid):
+    return [
+        {'cid': cid, 'url': f'https://gateway.pinata.cloud/ipfs/{cid}'}
+        for cid in ipfs_cid.split(',') if cid
+    ]
 
 
 def _iso(value):
@@ -162,7 +189,8 @@ def _complaint_json(complaint):
     }
     if complaint.ipfs_cid:
         data['ipfs_cid'] = complaint.ipfs_cid
-        data['ipfs_url'] = f'https://gateway.pinata.cloud/ipfs/{complaint.ipfs_cid}'
+        data['evidence'] = _evidence_list(complaint.ipfs_cid)
+        data['ipfs_url'] = data['evidence'][0]['url']
     if complaint.blockchain_tx:
         data['blockchain_tx'] = complaint.blockchain_tx
         data['etherscan_url'] = f'https://sepolia.etherscan.io/tx/{complaint.blockchain_tx}'

@@ -11,10 +11,93 @@ class AuthState extends ChangeNotifier {
   bool _isLoggedIn = false;
   String? _userName;
   String? _userEmail;
+  String? _userPhone;
+  DateTime? _joinedAt;
+  int? _userId;
 
   bool get isLoggedIn => _isLoggedIn;
   String? get userName => _userName;
   String? get userEmail => _userEmail;
+  String? get userPhone => _userPhone;
+  DateTime? get joinedAt => _joinedAt;
+  int? get userId => _userId;
+
+  /// "Priya Sharma" -> "PS"
+  String get initials {
+    final parts = (_userName ?? '').trim().split(RegExp(r'\s+'))
+      ..removeWhere((p) => p.isEmpty);
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return (parts.first[0] + parts.last[0]).toUpperCase();
+  }
+
+  /// Loads name, email and phone from GET /api/auth/me. Called after login
+  /// and on startup, so the profile shows even after the app restarts.
+  Future<void> loadProfile() async {
+    try {
+      final response = await ApiService.getMe();
+      if (response.statusCode != 200) return;
+      _applyUser(jsonDecode(response.body) as Map<String, dynamic>);
+      notifyListeners();
+    } catch (_) {
+      // Offline: keep whatever we already have.
+    }
+  }
+
+  void _applyUser(Map<String, dynamic> user) {
+    _userId = (user['id'] as num?)?.toInt() ?? _userId;
+    _userName = user['name'] as String? ?? _userName;
+    _userEmail = user['email'] as String? ?? _userEmail;
+    _userPhone = user['phone'] as String? ?? _userPhone;
+    final created = user['created_at'] as String?;
+    if (created != null) _joinedAt = DateTime.tryParse(created);
+  }
+
+  /// Returns null on success, otherwise a message to show.
+  Future<String?> updateProfile({String? name, String? phone}) async {
+    try {
+      final response = await ApiService.updateMe(name: name, phone: phone);
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) {
+        return data['error'] as String? ?? 'Could not save your changes.';
+      }
+      _applyUser(data);
+      notifyListeners();
+      return null;
+    } catch (_) {
+      return 'Cannot reach the server. Check your connection and try again.';
+    }
+  }
+
+  /// Returns null on success, otherwise a message to show.
+  Future<String?> changePassword(String current, String next) async {
+    try {
+      final response = await ApiService.changePassword(
+        currentPassword: current,
+        newPassword: next,
+      );
+      if (response.statusCode == 200) return null;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['error'] as String? ?? 'Could not change your password.';
+    } catch (_) {
+      return 'Cannot reach the server. Check your connection and try again.';
+    }
+  }
+
+  /// Returns null on success (and signs out), otherwise a message to show.
+  Future<String?> deleteAccount(String password) async {
+    try {
+      final response = await ApiService.deleteAccount(password);
+      if (response.statusCode == 200) {
+        await logout();
+        return null;
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['error'] as String? ?? 'Could not delete your account.';
+    } catch (_) {
+      return 'Cannot reach the server. Check your connection and try again.';
+    }
+  }
 
   /// Reads persisted tokens on app startup. Returns true if there's an
   /// existing session, so the caller can skip straight to the home route
@@ -45,6 +128,8 @@ class AuthState extends ChangeNotifier {
     _isLoggedIn = refreshed;
     if (!refreshed) {
       await ApiService.clearTokens();
+    } else {
+      await loadProfile();
     }
     notifyListeners();
     return _isLoggedIn;
@@ -66,11 +151,11 @@ class AuthState extends ChangeNotifier {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200) {
-        final user = data['user'] as Map<String, dynamic>;
-        _userName = user['name'] as String?;
-        _userEmail = user['email'] as String?;
+        _applyUser(data['user'] as Map<String, dynamic>);
         _isLoggedIn = true;
         notifyListeners();
+        // Fills in phone and join date, which login doesn't return.
+        await loadProfile();
         return null;
       }
 
@@ -88,6 +173,9 @@ class AuthState extends ChangeNotifier {
     _isLoggedIn = false;
     _userName = null;
     _userEmail = null;
+    _userPhone = null;
+    _joinedAt = null;
+    _userId = null;
     notifyListeners();
   }
 }

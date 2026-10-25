@@ -5,6 +5,21 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../config.dart';
+import '../theme.dart';
+
+/// Map tiles that match the theme: CARTO's dark map at night, the regular
+/// OpenStreetMap by day. Both are free with attribution and need no key.
+TileLayer themedTileLayer(BuildContext context) {
+  if (context.ss.isDark) {
+    return TileLayer(
+      urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      subdomains: const ['a', 'b', 'c', 'd'],
+      retinaMode: RetinaMode.isHighDensity(context),
+      userAgentPackageName: MapConfig.userAgentPackageName,
+    );
+  }
+  return osmTileLayer();
+}
 
 /// OpenStreetMap base layer. Free, no API key.
 TileLayer osmTileLayer() {
@@ -14,28 +29,84 @@ TileLayer osmTileLayer() {
   );
 }
 
-/// Credit line OpenStreetMap requires on every map.
+/// Credit line the map data and tiles require.
+Widget mapAttribution(BuildContext context) {
+  return RichAttributionWidget(
+    alignment: AttributionAlignment.bottomLeft,
+    attributions: [
+      const TextSourceAttribution('OpenStreetMap contributors'),
+      if (context.ss.isDark) const TextSourceAttribution('CARTO'),
+    ],
+  );
+}
+
 Widget osmAttribution() {
   return const RichAttributionWidget(
     attributions: [TextSourceAttribution('OpenStreetMap contributors')],
   );
 }
 
-/// Blue "you are here" dot.
+/// The pink pulsing "you are here" dot from the design.
 Marker userLocationMarker(LatLng point) {
   return Marker(
     point: point,
-    width: 24,
-    height: 24,
-    child: Container(
-      decoration: BoxDecoration(
-        color: Colors.blue,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.white, width: 3),
-        boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black26)],
-      ),
-    ),
+    width: 36,
+    height: 36,
+    child: const _PulsingDot(),
   );
+}
+
+class _PulsingDot extends StatefulWidget {
+  const _PulsingDot();
+
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, child) => Stack(
+        alignment: Alignment.center,
+        children: [
+          Container(
+            width: 14 + 22 * _c.value,
+            height: 14 + 22 * _c.value,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primary.withValues(alpha: 0.3 * (1 - _c.value)),
+            ),
+          ),
+          child!,
+        ],
+      ),
+      child: Container(
+        width: 14,
+        height: 14,
+        decoration: BoxDecoration(
+          color: AppColors.primary,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 2),
+          boxShadow: [
+            BoxShadow(color: AppColors.primary.withValues(alpha: 0.6), blurRadius: 8),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Pale circle showing how accurate the GPS fix is.
@@ -44,24 +115,116 @@ CircleMarker userAccuracyCircle(LatLng point, double accuracyMetres) {
     point: point,
     radius: accuracyMetres.clamp(5, 200).toDouble(),
     useRadiusInMeter: true,
-    color: Colors.blue.withValues(alpha: 0.12),
-    borderColor: Colors.blue.withValues(alpha: 0.35),
+    color: AppColors.primary.withValues(alpha: 0.08),
+    borderColor: AppColors.primary.withValues(alpha: 0.3),
     borderStrokeWidth: 1,
   );
 }
 
-/// Colour for a group of live reports. Matches the legend.
-Color liveReportColor(int count) {
-  if (count >= 5) return Colors.red.shade600;
-  if (count >= 2) return Colors.orange.shade700;
-  return Colors.amber.shade700;
+enum ZoneLevel { safe, moderate, unsafe }
+
+Color zoneColor(ZoneLevel level) => switch (level) {
+      ZoneLevel.safe => AppColors.success,
+      ZoneLevel.moderate => AppColors.warning,
+      ZoneLevel.unsafe => AppColors.destructive,
+    };
+
+/// Glowing dot marker from the design (MapMarker.tsx), with an optional
+/// count for clusters.
+class ZoneMarker extends StatelessWidget {
+  const ZoneMarker({super.key, required this.level, this.size = 16, this.count, this.fresh = false});
+
+  final ZoneLevel level;
+  final double size;
+  final int? count;
+
+  /// Reported in the last hour: pulses.
+  final bool fresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = zoneColor(level);
+    final dot = Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 2),
+        boxShadow: [BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 12)],
+      ),
+      child: count != null && count! > 1
+          ? Text(
+              count! > 99 ? '99+' : '$count',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            )
+          : null,
+    );
+    if (!fresh) return Center(child: dot);
+    return Center(child: _Ping(color: color, size: size, child: dot));
+  }
+}
+
+class _Ping extends StatefulWidget {
+  const _Ping({required this.color, required this.size, required this.child});
+
+  final Color color;
+  final double size;
+  final Widget child;
+
+  @override
+  State<_Ping> createState() => _PingState();
+}
+
+class _PingState extends State<_Ping> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, child) => Stack(
+        alignment: Alignment.center,
+        clipBehavior: Clip.none,
+        children: [
+          Transform.scale(
+            scale: 1 + _c.value,
+            child: Container(
+              width: widget.size,
+              height: widget.size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: widget.color.withValues(alpha: 0.6 * (1 - _c.value)),
+              ),
+            ),
+          ),
+          child!,
+        ],
+      ),
+      child: widget.child,
+    );
+  }
 }
 
 /// Colour for a 0–100 safety score.
 Color scoreColor(int score) {
-  if (score >= 70) return Colors.green.shade600;
-  if (score >= 40) return Colors.orange.shade700;
-  return Colors.red.shade600;
+  if (score >= 70) return AppColors.success;
+  if (score >= 40) return AppColors.warning;
+  return AppColors.destructive;
 }
 
 String scoreLabel(int score) {
@@ -74,77 +237,38 @@ String scoreLabel(int score) {
 Color districtColor(double intensity) {
   final double t = intensity.clamp(0.0, 1.0).toDouble();
   return t < 0.5
-      ? Color.lerp(Colors.green, Colors.yellow.shade700, t * 2)!
-      : Color.lerp(Colors.yellow.shade700, Colors.red, (t - 0.5) * 2)!;
+      ? Color.lerp(AppColors.success, AppColors.warning, t * 2)!
+      : Color.lerp(AppColors.warning, AppColors.destructive, (t - 0.5) * 2)!;
 }
 
-/// A bubble for one or more live reports.
-class LiveReportBubble extends StatelessWidget {
-  const LiveReportBubble({
-    super.key,
-    required this.count,
-    required this.hasRecent,
-  });
-
-  final int count;
-
-  /// True if any report in the bubble is under an hour old.
-  final bool hasRecent;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = liveReportColor(count);
-
-    return Container(
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: hasRecent ? Colors.white : Colors.white70,
-          width: hasRecent ? 3 : 2,
-        ),
-        boxShadow: [
-          BoxShadow(
-            blurRadius: hasRecent ? 10 : 4,
-            spreadRadius: hasRecent ? 2 : 0,
-            color: color.withValues(alpha: 0.6),
-          ),
-        ],
-      ),
-      child: count > 1
-          ? Text(
-              count > 99 ? '99+' : '$count',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            )
-          : const Icon(Icons.warning_rounded, color: Colors.white, size: 16),
-    );
-  }
+/// Short "2 h ago" style age.
+String formatAge(Duration? age) {
+  if (age == null) return 'recently';
+  if (age.inMinutes < 1) return 'just now';
+  if (age.inMinutes < 60) return '${age.inMinutes}m ago';
+  if (age.inHours < 24) return '${age.inHours}h ago';
+  return '${age.inDays}d ago';
 }
 
-/// "Live · updated 12s ago" pill. Refreshes its own text so the map
-/// underneath doesn't have to rebuild every second.
-class LiveStatusPill extends StatefulWidget {
-  const LiveStatusPill({super.key, this.lastUpdated, this.error});
+/// "● Live" pill. Shows "Reconnecting…" when the feed is down.
+class LiveBadge extends StatefulWidget {
+  const LiveBadge({super.key, this.lastUpdated, this.error, this.compact = false});
 
   final DateTime? lastUpdated;
   final String? error;
+  final bool compact;
 
   @override
-  State<LiveStatusPill> createState() => _LiveStatusPillState();
+  State<LiveBadge> createState() => _LiveBadgeState();
 }
 
-class _LiveStatusPillState extends State<LiveStatusPill> {
+class _LiveBadgeState extends State<LiveBadge> {
   Timer? _ticker;
 
   @override
   void initState() {
     super.initState();
-    _ticker = Timer.periodic(const Duration(seconds: 5), (_) {
+    _ticker = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted) setState(() {});
     });
   }
@@ -155,52 +279,47 @@ class _LiveStatusPillState extends State<LiveStatusPill> {
     super.dispose();
   }
 
-  String _ago(DateTime time) {
-    final seconds = DateTime.now().difference(time).inSeconds;
-    if (seconds < 10) return 'just now';
-    if (seconds < 60) return '${seconds}s ago';
-    return '${seconds ~/ 60} min ago';
-  }
-
   @override
   Widget build(BuildContext context) {
     final offline = widget.error != null;
-    final updated = widget.lastUpdated;
+    final color = offline ? AppColors.warning : AppColors.success;
 
-    final text = offline
-        ? widget.error!
-        : updated == null
-            ? 'Connecting…'
-            : 'Live · updated ${_ago(updated)}';
+    String text;
+    if (offline) {
+      text = widget.compact ? 'Offline' : widget.error!;
+    } else if (widget.compact || widget.lastUpdated == null) {
+      text = 'Live';
+    } else {
+      final s = DateTime.now().difference(widget.lastUpdated!).inSeconds;
+      text = s < 15 ? 'Live' : 'Live · ${s < 60 ? '${s}s' : '${s ~/ 60}m'} ago';
+    }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: EdgeInsets.symmetric(horizontal: widget.compact ? 8 : 12, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black26)],
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.circle,
-            size: 9,
-            color: offline ? Colors.orange : Colors.green,
+            offline ? Icons.cloud_off_rounded : Icons.sensors_rounded,
+            size: widget.compact ? 10 : 12,
+            color: color,
           ),
-          const SizedBox(width: 6),
-          Text(text, style: const TextStyle(fontSize: 12)),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: widget.compact ? 9 : 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
         ],
       ),
     );
   }
-}
-
-/// Short "2 h ago" style age.
-String formatAge(Duration? age) {
-  if (age == null) return 'recently';
-  if (age.inMinutes < 1) return 'just now';
-  if (age.inMinutes < 60) return '${age.inMinutes} min ago';
-  if (age.inHours < 24) return '${age.inHours} h ago';
-  return '${age.inDays} days ago';
 }

@@ -21,12 +21,19 @@ class LiveReportsFeed extends ChangeNotifier {
   final SafetyApiService _api;
   final Duration interval;
 
+  /// How far back the map looks (the 1 Hour / 24 Hours / This Week chips).
+  int windowHours = 24 * 30;
+
   final Map<int, LiveReport> _reports = {};
   String? _cursor;
   Timer? _timer;
   bool _polling = false;
   bool _disposed = false;
   int _failures = 0;
+
+  /// Bumped when the window changes, so a request that was already in
+  /// flight for the old window is thrown away.
+  int _generation = 0;
 
   /// When the last successful check finished.
   DateTime? lastUpdated;
@@ -55,6 +62,19 @@ class LiveReportsFeed extends ChangeNotifier {
 
   Future<void> refresh() => _poll();
 
+  /// Switch the time window and reload from scratch.
+  Future<void> setWindow(int hours) async {
+    if (hours == windowHours) return;
+    windowHours = hours;
+    _generation++;
+    _polling = false;
+    _reports.clear();
+    _cursor = null;
+    latestNew = const [];
+    notifyListeners();
+    await _poll();
+  }
+
   void _scheduleNext() {
     _timer?.cancel();
     final delay = interval * (1 << math.min(_failures, 3));
@@ -70,15 +90,25 @@ class LiveReportsFeed extends ChangeNotifier {
     _polling = true;
 
     final firstLoad = _cursor == null;
+    final generation = _generation;
 
     try {
-      final page = await _api.fetchLiveReports(since: _cursor);
+      final page = await _api.fetchLiveReports(
+        since: _cursor,
+        hours: windowHours,
+      );
+      if (generation != _generation) return;
       final fresh = <LiveReport>[];
 
       for (final report in page.reports) {
         if (!_reports.containsKey(report.id)) fresh.add(report);
         _reports[report.id] = report;
       }
+
+      final cutoff = DateTime.now().toUtc().subtract(Duration(hours: windowHours));
+      _reports.removeWhere(
+        (_, r) => r.reportedAt != null && r.reportedAt!.isBefore(cutoff),
+      );
 
       _cursor = page.serverTime ?? _cursor;
       latestNew = firstLoad ? const [] : fresh;
@@ -91,7 +121,7 @@ class LiveReportsFeed extends ChangeNotifier {
       error = 'Reconnecting…';
       _failures++;
     } finally {
-      _polling = false;
+      if (generation == _generation) _polling = false;
     }
 
     if (!_disposed) notifyListeners();

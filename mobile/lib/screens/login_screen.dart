@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/auth_state.dart';
+import '../state/contacts_state.dart';
+import '../theme.dart';
+import '../widgets/ss_ui.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -11,101 +14,289 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  bool _isLoading = false;
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _loading = false;
   String? _error;
 
   @override
   void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
+    _email.dispose();
+    _password.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<void> _login() async {
+    final email = _email.text.trim();
+    final password = _password.text;
+
+    if (email.isEmpty || password.isEmpty) {
+      setState(() => _error = 'Please fill in all fields.');
+      return;
+    }
 
     setState(() {
-      _isLoading = true;
+      _loading = true;
       _error = null;
     });
 
-    final authState = context.read<AuthState>();
-    final error = await authState.login(
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-    );
+    final error = await context.read<AuthState>().login(
+          email: email,
+          password: password,
+        );
 
     if (!mounted) return;
 
-    setState(() {
-      _isLoading = false;
-      _error = error;
-    });
-
-    if (error == null) {
-      Navigator.of(context).pushReplacementNamed('/home');
+    if (error != null) {
+      setState(() {
+        _loading = false;
+        _error = error;
+      });
+      return;
     }
+
+    final contacts = context.read<ContactsState>();
+    await contacts.loadCached();
+    contacts.refresh();
+
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
+  }
+
+  void _notAvailable(String what) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$what isn\'t set up yet.')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('SecureShe')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Welcome back',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                  textAlign: TextAlign.center,
+    final c = context.ss;
+
+    return SSPage(
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: AutofillGroup(
+          child: Column(
+            children: [
+              const SizedBox(height: 32),
+              const _BrandHero(),
+              const SizedBox(height: 24),
+              SSCard(
+                radius: 24,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Welcome back',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: c.foreground,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Sign in to continue keeping yourself safe',
+                      style: TextStyle(fontSize: 12, color: c.mutedForeground),
+                    ),
+                    const SizedBox(height: 20),
+                    SSTextField(
+                      controller: _email,
+                      label: 'Email Address',
+                      hint: 'you@example.com',
+                      icon: Icons.mail_outline_rounded,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const [AutofillHints.email],
+                    ),
+                    const SizedBox(height: 16),
+                    SSTextField(
+                      controller: _password,
+                      label: 'Password',
+                      hint: 'Enter your password',
+                      icon: Icons.lock_outline_rounded,
+                      obscure: true,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => _login(),
+                      autofillHints: const [AutofillHints.password],
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => _notAvailable('Password reset'),
+                        child: const Text(
+                          'Forgot Password?',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                    if (_error != null) ...[
+                      MessageBanner(text: _error!),
+                      const SizedBox(height: 16),
+                    ],
+                    GradientButton(
+                      label: 'Sign In',
+                      trailingIcon: Icons.arrow_forward_rounded,
+                      loading: _loading,
+                      onPressed: _login,
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(child: Divider(color: c.border)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Text(
+                            'or continue with',
+                            style: TextStyle(fontSize: 11, color: c.mutedForeground),
+                          ),
+                        ),
+                        Expanded(child: Divider(color: c.border)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _SocialButton(
+                            label: 'Google',
+                            icon: Icons.g_mobiledata_rounded,
+                            onTap: () => _notAvailable('Google sign-in'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _SocialButton(
+                            label: 'Apple',
+                            icon: Icons.apple_rounded,
+                            onTap: () => _notAvailable('Apple sign-in'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 32),
-                TextFormField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(labelText: 'Email'),
-                  validator: (value) =>
-                      (value == null || value.isEmpty) ? 'Email is required' : null,
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      "Don't have an account?",
+                      style: TextStyle(fontSize: 13, color: c.mutedForeground),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pushNamed('/register'),
+                      child: const Text(
+                        'Sign Up',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _passwordController,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                  validator: (value) =>
-                      (value == null || value.isEmpty) ? 'Password is required' : null,
-                ),
-                if (_error != null) ...[
-                  const SizedBox(height: 16),
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
-                ],
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _submit,
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Text('Log in'),
-                ),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pushNamed('/register'),
-                  child: const Text("Don't have an account? Register"),
+              ),
+              const TagPill(
+                text: 'Your data is encrypted & secure',
+                color: AppColors.success,
+                icon: Icons.circle,
+                fontSize: 10,
+              ),
+              const SizedBox(height: 32),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BrandHero extends StatelessWidget {
+  const _BrandHero();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ss;
+    return Column(
+      children: [
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0.7, end: 1),
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+          builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
+          child: Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              gradient: AppColors.primaryGradient,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.35),
+                  blurRadius: 40,
                 ),
               ],
             ),
+            child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 34),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          'SecureShe',
+          style: TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.5,
+            color: c.foreground,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Your personal safety companion',
+          style: TextStyle(fontSize: 13, color: c.mutedForeground),
+        ),
+      ],
+    );
+  }
+}
+
+class _SocialButton extends StatelessWidget {
+  const _SocialButton({required this.label, required this.icon, required this.onTap});
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.ss;
+    return Material(
+      color: c.input,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: c.border),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 20, color: c.foreground),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: c.foreground,
+                ),
+              ),
+            ],
           ),
         ),
       ),

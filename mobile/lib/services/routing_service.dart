@@ -276,4 +276,46 @@ class RoutingService {
     final step = (points.length - 1) / (count - 1);
     return [for (var i = 0; i < count; i++) points[(i * step).round()]];
   }
+
+  static final Map<String, String> _placeNameCache = {};
+
+  /// A short readable name for a spot ("Katpadi Road, Vellore"), or null.
+  Future<String?> placeName(LatLng point) async {
+    final key = '${point.latitude.toStringAsFixed(3)},${point.longitude.toStringAsFixed(3)}';
+    final cached = _placeNameCache[key];
+    if (cached != null) return cached;
+
+    try {
+      final uri = Uri.https('nominatim.openstreetmap.org', '/reverse', {
+        'lat': '${point.latitude}',
+        'lon': '${point.longitude}',
+        'format': 'jsonv2',
+        'zoom': '17',
+        'accept-language': 'en',
+      });
+      final response =
+          await http.get(uri, headers: MapConfig.httpHeaders).timeout(_timeout);
+      if (response.statusCode != 200) return null;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final address = Map<String, dynamic>.from(data['address'] as Map? ?? {});
+
+      final local = (data['name'] as String?)?.trim().isNotEmpty == true
+          ? data['name'] as String
+          : (address['road'] ?? address['suburb'] ?? address['neighbourhood']) as String?;
+      final town = (address['city'] ??
+          address['town'] ??
+          address['village'] ??
+          address['county']) as String?;
+
+      final parts = [local, town].whereType<String>().where((p) => p.isNotEmpty).toList();
+      if (parts.isEmpty) return null;
+
+      final name = parts.toSet().join(', ');
+      _placeNameCache[key] = name;
+      return name;
+    } catch (_) {
+      return null;
+    }
+  }
 }
