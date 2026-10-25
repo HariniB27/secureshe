@@ -7,18 +7,16 @@ import 'package:latlong2/latlong.dart';
 import '../config.dart';
 import '../theme.dart';
 
-/// Map tiles that match the theme: CARTO's dark map at night, the regular
-/// OpenStreetMap by day. Both are free with attribution and need no key.
+/// Map tiles that match the theme. Both use the regular OpenStreetMap tiles
+/// (free, no key). In dark mode the tiles are colour-inverted on the phone,
+/// so the map goes dark without depending on a paid dark-tile service.
+/// (CARTO's dark tiles now need an API key, which showed "API KEY REQUIRED".)
 TileLayer themedTileLayer(BuildContext context) {
-  if (context.ss.isDark) {
-    return TileLayer(
-      urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      subdomains: const ['a', 'b', 'c', 'd'],
-      retinaMode: RetinaMode.isHighDensity(context),
-      userAgentPackageName: MapConfig.userAgentPackageName,
-    );
-  }
-  return osmTileLayer();
+  return TileLayer(
+    urlTemplate: MapConfig.tileUrl,
+    userAgentPackageName: MapConfig.userAgentPackageName,
+    tileBuilder: context.ss.isDark ? darkModeTileBuilder : null,
+  );
 }
 
 /// OpenStreetMap base layer. Free, no API key.
@@ -31,12 +29,9 @@ TileLayer osmTileLayer() {
 
 /// Credit line the map data and tiles require.
 Widget mapAttribution(BuildContext context) {
-  return RichAttributionWidget(
+  return const RichAttributionWidget(
     alignment: AttributionAlignment.bottomLeft,
-    attributions: [
-      const TextSourceAttribution('OpenStreetMap contributors'),
-      if (context.ss.isDark) const TextSourceAttribution('CARTO'),
-    ],
+    attributions: [TextSourceAttribution('OpenStreetMap contributors')],
   );
 }
 
