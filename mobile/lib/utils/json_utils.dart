@@ -22,11 +22,12 @@ List<dynamic>? tryDecodeList(String body) {
   return null;
 }
 
-/// True when this 401 came from the login-token check (Flask-JWT-Extended
-/// answers `{"msg": "..."}`), as opposed to our own "wrong password"
-/// answers, which use `error` or `verified`.
+/// True when the server rejected our login token (Flask-JWT-Extended answers
+/// `{"msg": "..."}`: 401 for a missing or expired token, 422 for a malformed
+/// or re-signed one), as opposed to our own "wrong password" answers, which
+/// use `error` or `verified`.
 bool isSessionExpiredResponse(http.Response response) {
-  if (response.statusCode != 401) return false;
+  if (response.statusCode != 401 && response.statusCode != 422) return false;
   final data = tryDecodeMap(response.body);
   return data != null && data.containsKey('msg') && !data.containsKey('error');
 }

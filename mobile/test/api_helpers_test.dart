@@ -32,6 +32,10 @@ void main() {
       expect(isSessionExpiredResponse(res(401, '{"verified": false}')), isFalse);
     });
 
+    test('a malformed or re-signed token (422 {"msg": ...}) is also a dead session', () {
+      expect(isSessionExpiredResponse(res(422, '{"msg":"Signature verification failed"}')), isTrue);
+    });
+
     test('other statuses and non-JSON bodies are not session expiry', () {
       expect(isSessionExpiredResponse(res(403, '{"msg":"x"}')), isFalse);
       expect(isSessionExpiredResponse(res(401, '<html>nope</html>')), isFalse);
