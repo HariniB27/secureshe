@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/api_service.dart';
+import '../utils/json_utils.dart';
 
 /// App-wide auth/session state. Wrap the app in a `ChangeNotifierProvider<AuthState>`
 /// (see main.dart) and read it with `context.watch<AuthState>()` / `context.read<AuthState>()`.
@@ -37,7 +36,9 @@ class AuthState extends ChangeNotifier {
     try {
       final response = await ApiService.getMe();
       if (response.statusCode != 200) return;
-      _applyUser(jsonDecode(response.body) as Map<String, dynamic>);
+      final data = tryDecodeMap(response.body);
+      if (data == null) return;
+      _applyUser(data);
       notifyListeners();
     } catch (_) {
       // Offline: keep whatever we already have.
@@ -57,9 +58,9 @@ class AuthState extends ChangeNotifier {
   Future<String?> updateProfile({String? name, String? phone}) async {
     try {
       final response = await ApiService.updateMe(name: name, phone: phone);
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200) {
-        return data['error'] as String? ?? 'Could not save your changes.';
+      final data = tryDecodeMap(response.body);
+      if (response.statusCode != 200 || data == null) {
+        return errorMessage(response, fallback: 'Could not save your changes.');
       }
       _applyUser(data);
       notifyListeners();
@@ -77,8 +78,7 @@ class AuthState extends ChangeNotifier {
         newPassword: next,
       );
       if (response.statusCode == 200) return null;
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return data['error'] as String? ?? 'Could not change your password.';
+      return errorMessage(response, fallback: 'Could not change your password.');
     } catch (_) {
       return 'Cannot reach the server. Check your connection and try again.';
     }
@@ -92,8 +92,7 @@ class AuthState extends ChangeNotifier {
         await logout();
         return null;
       }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return data['error'] as String? ?? 'Could not delete your account.';
+      return errorMessage(response, fallback: 'Could not delete your account.');
     } catch (_) {
       return 'Cannot reach the server. Check your connection and try again.';
     }
@@ -147,25 +146,39 @@ class AuthState extends ChangeNotifier {
       return 'Cannot reach the server. Check your connection and try again.';
     }
 
-    try {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+    // The body isn't always JSON (a 500 can come back as an HTML page), so
+    // decoding is its own step and never throws.
+    final data = tryDecodeMap(response.body);
+    final user = data?['user'];
 
-      if (response.statusCode == 200) {
-        _applyUser(data['user'] as Map<String, dynamic>);
-        _isLoggedIn = true;
-        notifyListeners();
-        // Fills in phone and join date, which login doesn't return.
-        await loadProfile();
-        return null;
-      }
-
-      return data['error'] as String? ?? 'Login failed';
-    } catch (_) {
-      // The server responded, but not with the JSON we expect (e.g. a 500
-      // with an HTML error page) — surface a generic message instead of
-      // leaving the caller's loading state stuck on an uncaught exception.
-      return 'Something went wrong (server returned ${response.statusCode}). Please try again.';
+    if (response.statusCode == 200 && user is Map) {
+      _applyUser(Map<String, dynamic>.from(user));
+      _isLoggedIn = true;
+      _sessionExpired = false;
+      notifyListeners();
+      // Fills in phone and join date, which login doesn't return.
+      await loadProfile();
+      return null;
     }
+
+    return errorMessage(
+      response,
+      fallback: 'Something went wrong (server returned ${response.statusCode}). Please try again.',
+    );
+  }
+
+  bool _sessionExpired = false;
+
+  /// True after the server rejected our login token for good; the login
+  /// screen shows a note once, then calls [clearSessionNotice].
+  bool get sessionExpired => _sessionExpired;
+
+  void clearSessionNotice() => _sessionExpired = false;
+
+  /// Signs out because the session ended (not because the user asked to).
+  Future<void> expireSession() async {
+    _sessionExpired = true;
+    await logout();
   }
 
   Future<void> logout() async {

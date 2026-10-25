@@ -14,6 +14,7 @@ import 'screens/report_screen.dart';
 import 'screens/report_status_screen.dart';
 import 'screens/sos_confirm_screen.dart';
 import 'screens/trip_tracking_screen.dart';
+import 'services/api_service.dart';
 import 'state/app_prefs.dart';
 import 'state/auth_state.dart';
 import 'state/contacts_state.dart';
@@ -22,15 +23,26 @@ import 'state/trip_state.dart';
 import 'theme.dart';
 import 'widgets/ss_ui.dart';
 
+/// Lets code outside the widget tree (the API layer) change screens.
+final navigatorKey = GlobalKey<NavigatorState>();
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
   final prefs = AppPrefs();
+  final auth = AuthState();
+
+  // When the server rejects the login token for good (even after a refresh),
+  // sign out and go to the login screen, which explains why.
+  ApiService.onSessionExpired = () async {
+    await auth.expireSession();
+    navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
+  };
 
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AuthState()),
+        ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider.value(value: prefs),
         ChangeNotifierProvider(create: (_) => ContactsState()),
         ChangeNotifierProvider(create: (_) => ShellController()),
@@ -49,6 +61,7 @@ class SecureSheApp extends StatelessWidget {
     final themeMode = context.select<AppPrefs, ThemeMode>((p) => p.themeMode);
 
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'SecureShe',
       debugShowCheckedModeBanner: false,
       theme: lightTheme,

@@ -1,9 +1,9 @@
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
 import '../models/report.dart';
 import '../services/api_service.dart';
+import '../utils/json_utils.dart';
 import '../theme.dart';
 import '../widgets/ss_ui.dart';
 
@@ -31,13 +31,20 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
       final response = await ApiService.myComplaints();
       if (!mounted) return;
       if (response.statusCode != 200) {
-        setState(() => _error = 'Could not load your reports (${response.statusCode}).');
+        setState(() => _error = errorMessage(
+              response,
+              fallback: 'Could not load your reports (${response.statusCode}).',
+            ));
         return;
       }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final list = tryDecodeMap(response.body)?['complaints'];
+      if (list is! List) {
+        setState(() => _error = 'Server error, try again.');
+        return;
+      }
       setState(() {
         _error = null;
-        _reports = (data['complaints'] as List)
+        _reports = list
             .map((e) => Report.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
       });

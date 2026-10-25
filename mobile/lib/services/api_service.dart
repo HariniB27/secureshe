@@ -5,12 +5,19 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
+import '../utils/json_utils.dart';
 
 /// Thin wrapper around the SecureShe backend API.
 ///
 /// The server address comes from [ApiConfig] (see lib/config.dart).
 class ApiService {
   static String get baseUrl => ApiConfig.baseUrl;
+
+  /// Called when a request is still rejected as "not logged in" after one
+  /// token refresh (the session is really over). main.dart points this at
+  /// "sign out and go to the login screen".
+  static void Function()? onSessionExpired;
+  static bool _expiring = false;
 
   static const _storage = FlutterSecureStorage();
   static const _accessTokenKey = 'access_token';
@@ -64,11 +71,12 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      await saveTokens(
-        accessToken: data['access_token'] as String,
-        refreshToken: data['refresh_token'] as String,
-      );
+      final data = tryDecodeMap(response.body);
+      final access = data?['access_token'];
+      final refresh = data?['refresh_token'];
+      if (access is String && refresh is String) {
+        await saveTokens(accessToken: access, refreshToken: refresh);
+      }
     }
 
     return response;
@@ -86,12 +94,11 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      await _storage.write(
-        key: _accessTokenKey,
-        value: data['access_token'] as String,
-      );
-      return true;
+      final access = tryDecodeMap(response.body)?['access_token'];
+      if (access is String) {
+        await _storage.write(key: _accessTokenKey, value: access);
+        return true;
+      }
     }
 
     return false;
@@ -119,6 +126,18 @@ class ApiService {
       }
     }
 
+    // Still "not logged in" after a refresh: the session is over. (Our own
+    // wrong-password answers are 401 too, but they carry `error`/`verified`,
+    // not the token check's `msg`, so they don't land here.)
+    if (isSessionExpiredResponse(response) && !_expiring) {
+      _expiring = true;
+      try {
+        onSessionExpired?.call();
+      } finally {
+        Future<void>.delayed(const Duration(seconds: 2), () => _expiring = false);
+      }
+    }
+
     return response;
   }
 
@@ -133,6 +152,7 @@ class ApiService {
     double? lat,
     double? lng,
     String? locationSource,
+    String? locationText,
     String? category,
     bool anonymous = false,
     List<({Uint8List bytes, String filename})> files = const [],
@@ -147,6 +167,9 @@ class ApiService {
         ..fields['anonymous'] = anonymous ? 'true' : 'false';
 
       if (category != null) request.fields['category'] = category;
+      if (locationText != null && locationText.trim().isNotEmpty) {
+        request.fields['location_text'] = locationText.trim();
+      }
 
       if (lat != null && lng != null) {
         request.fields['lat'] = lat.toString();
@@ -289,6 +312,15 @@ class ApiService {
   static Future<http.Response> complaintStatus(String id) => authedRequest(
         (token) => http.get(
           Uri.parse('$baseUrl/api/complaints/status/$id'),
+          headers: _jsonHeaders(token),
+        ),
+      );
+
+  /// `POST /api/complaints/<id>/retry-chain`: owner-only; tries the
+  /// blockchain log again for a report whose log failed.
+  static Future<http.Response> retryChain(String id) => authedRequest(
+        (token) => http.post(
+          Uri.parse('$baseUrl/api/complaints/$id/retry-chain'),
           headers: _jsonHeaders(token),
         ),
       );

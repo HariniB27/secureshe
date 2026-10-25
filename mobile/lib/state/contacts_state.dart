@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/api_service.dart';
+import '../utils/json_utils.dart';
 
 class TrustedContact {
   TrustedContact({required this.id, required this.name, required this.phone});
@@ -80,13 +81,17 @@ class ContactsState extends ChangeNotifier {
 
     try {
       final response = await ApiService.listContacts();
-      if (response.statusCode == 200) {
-        contacts = (jsonDecode(response.body) as List)
+      final list = response.statusCode == 200 ? tryDecodeList(response.body) : null;
+      if (list != null) {
+        contacts = list
             .map((e) => TrustedContact.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
         await _cache();
       } else {
-        error = 'Could not load your circle (${response.statusCode}).';
+        error = errorMessage(
+          response,
+          fallback: 'Could not load your circle (${response.statusCode}).',
+        );
       }
     } catch (_) {
       error = 'Offline. Showing your last saved circle.';
@@ -104,8 +109,7 @@ class ContactsState extends ChangeNotifier {
         await refresh();
         return null;
       }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return data['error'] as String? ?? 'Could not add this contact.';
+      return errorMessage(response, fallback: 'Could not add this contact.');
     } catch (_) {
       return 'Cannot reach the server. Check your connection and try again.';
     }
