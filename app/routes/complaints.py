@@ -42,6 +42,12 @@ def submit_complaint():
     except ValueError:
         return jsonify({'error': 'lat/lng must be valid numbers'}), 400
 
+    location_source = request.form.get('location_source') if request.form else None
+    if location_source == '':
+        location_source = None
+    if location_source is not None and location_source not in ('gps', 'manual'):
+        return jsonify({'error': "location_source must be 'gps' or 'manual'"}), 400
+
     complaint_id = str(uuid.uuid4())[:8].upper()
     ipfs_cid = None
     evidence_hash = None
@@ -81,6 +87,7 @@ def submit_complaint():
         blockchain_tx=blockchain_tx,
         latitude=latitude,
         longitude=longitude,
+        location_source=location_source,
         status='SUBMITTED'
     )
 
@@ -102,6 +109,8 @@ def submit_complaint():
     if latitude is not None or longitude is not None:
         response_data['latitude'] = latitude
         response_data['longitude'] = longitude
+    if location_source is not None:
+        response_data['location_source'] = location_source
 
     return jsonify(response_data), 201
 

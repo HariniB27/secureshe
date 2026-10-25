@@ -122,11 +122,16 @@ class ApiService {
   }
 
   /// POST /api/complaints/submit — multipart, with an optional evidence file
-  /// (photo or audio). Retries once via /api/auth/refresh on a 401.
+  /// (photo or audio) and optional location. [locationSource] should be
+  /// 'gps' or 'manual' when [lat]/[lng] are provided. Retries once via
+  /// /api/auth/refresh on a 401.
   static Future<http.Response> submitComplaint({
     required String description,
     Uint8List? evidenceBytes,
     String? evidenceFilename,
+    double? lat,
+    double? lng,
+    String? locationSource,
   }) {
     return authedRequest((token) async {
       final request = http.MultipartRequest(
@@ -135,6 +140,14 @@ class ApiService {
       )
         ..headers['Authorization'] = 'Bearer $token'
         ..fields['description'] = description;
+
+      if (lat != null && lng != null) {
+        request.fields['lat'] = lat.toString();
+        request.fields['lng'] = lng.toString();
+        if (locationSource != null) {
+          request.fields['location_source'] = locationSource;
+        }
+      }
 
       if (evidenceBytes != null) {
         request.files.add(
