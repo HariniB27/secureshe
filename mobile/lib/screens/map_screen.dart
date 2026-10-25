@@ -885,6 +885,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final showSafe = _layerMode != _LayerMode.heat || _routeSet;
     final incidents = _feed.reports.length +
         _flags.where((f) => !f.isSafe).length;
+    // In fullscreen the map runs edge to edge, under the status bar at the
+    // top and the app's bottom bar. Keep the overlays clear of both.
+    final insets = MediaQuery.paddingOf(context);
+    // Below the fullscreen top bar: back button row (36) + gap (8) +
+    // time filter chips (~26) + breathing room.
+    final legendTop = tall ? insets.top + 12 + 36 + 8 + 26 + 12 : 12.0;
+    final buttonsBottom = tall ? insets.bottom + 16 : 12.0;
 
     return Stack(
       children: [
@@ -1004,7 +1011,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         // Legend
         Positioned(
-          top: tall ? 100 : 12,
+          top: legendTop,
           left: 12,
           child: _Legend(routeSet: _routeSet),
         ),
@@ -1023,7 +1030,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         // Buttons
         Positioned(
           right: 12,
-          bottom: tall ? 24 : 12,
+          bottom: buttonsBottom,
           child: Column(
             children: [
               if (tall) ...[
