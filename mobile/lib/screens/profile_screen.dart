@@ -1,10 +1,10 @@
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/api_service.dart';
+import '../utils/json_utils.dart';
 import '../state/app_prefs.dart';
 import '../state/auth_state.dart';
 import '../state/contacts_state.dart';
@@ -51,8 +51,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final response = await ApiService.myComplaints();
       if (response.statusCode != 200 || !mounted) return;
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      setState(() => _reportCount = (data['complaints'] as List).length);
+      final list = tryDecodeMap(response.body)?['complaints'];
+      if (list is List) setState(() => _reportCount = list.length);
     } catch (_) {}
   }
 
@@ -256,7 +256,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     _Stat(
                       value: '${prefs.sosAlerts}',
-                      label: 'SOS Alerts',
+                      label: 'SOS Sent',
                       color: c.warning,
                     ),
                   ],

@@ -20,6 +20,17 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // Arrived here because the server ended the session: say so, once.
+    final auth = context.read<AuthState>();
+    if (auth.sessionExpired) {
+      _error = 'Your session expired. Please sign in again.';
+      auth.clearSessionNotice();
+    }
+  }
+
+  @override
   void dispose() {
     _email.dispose();
     _password.dispose();
@@ -61,12 +72,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
-  }
-
-  void _notAvailable(String what) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$what isn\'t set up yet.')),
-    );
   }
 
   @override
@@ -122,14 +127,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       onSubmitted: (_) => _login(),
                       autofillHints: const [AutofillHints.password],
                     ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () => _notAvailable('Password reset'),
-                        child: const Text(
-                          'Forgot Password?',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                        ),
+                    // There is no email service yet, so there is no reset flow
+                    // to link to. Say so instead of showing a dead button.
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10, bottom: 16),
+                      child: Text(
+                        'Contact support to reset your password',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 12, color: c.mutedForeground),
                       ),
                     ),
                     if (_error != null) ...[
@@ -141,40 +146,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       trailingIcon: Icons.arrow_forward_rounded,
                       loading: _loading,
                       onPressed: _login,
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(child: Divider(color: c.border)),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Text(
-                            'or continue with',
-                            style: TextStyle(fontSize: 11, color: c.mutedForeground),
-                          ),
-                        ),
-                        Expanded(child: Divider(color: c.border)),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _SocialButton(
-                            label: 'Google',
-                            icon: Icons.g_mobiledata_rounded,
-                            onTap: () => _notAvailable('Google sign-in'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _SocialButton(
-                            label: 'Apple',
-                            icon: Icons.apple_rounded,
-                            onTap: () => _notAvailable('Apple sign-in'),
-                          ),
-                        ),
-                      ],
                     ),
                   ],
                 ),
@@ -199,7 +170,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const TagPill(
-                text: 'Your data is encrypted & secure',
+                text: 'Your password is stored hashed, never in plain text',
                 color: AppColors.success,
                 icon: Icons.circle,
                 fontSize: 10,
@@ -262,44 +233,3 @@ class _BrandHero extends StatelessWidget {
   }
 }
 
-class _SocialButton extends StatelessWidget {
-  const _SocialButton({required this.label, required this.icon, required this.onTap});
-
-  final String label;
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.ss;
-    return Material(
-      color: c.input,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: c.border),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 20, color: c.foreground),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: c.foreground,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}

@@ -12,6 +12,8 @@ import '../state/contacts_state.dart';
 import '../state/shell_controller.dart';
 import '../state/trip_state.dart';
 import '../theme.dart';
+import '../utils/json_utils.dart';
+import '../utils/validation.dart';
 import '../widgets/ss_components.dart';
 import '../widgets/ss_ui.dart';
 
@@ -61,9 +63,9 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
     List<dynamic> reports = [];
     try {
       final response = await ApiService.myComplaints();
-      if (response.statusCode == 200) {
-        reports = (jsonDecode(response.body) as Map<String, dynamic>)['complaints'] as List;
-      }
+      final data = response.statusCode == 200 ? tryDecodeMap(response.body) : null;
+      final list = data?['complaints'];
+      if (list is List) reports = list;
     } catch (_) {}
 
     final export = {
@@ -246,7 +248,7 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
               icon: Icons.key_rounded,
               color: AppColors.primary,
               label: 'Change Password',
-              description: 'At least 8 characters',
+              description: 'At least $kMinPasswordLength characters',
               onTap: _changePassword,
             ),
             _ToggleRow(
@@ -584,7 +586,9 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
   }
 
   bool get _valid =>
-      _current.text.isNotEmpty && _next.text.length >= 8 && _next.text == _confirm.text;
+      _current.text.isNotEmpty &&
+      _next.text.length >= kMinPasswordLength &&
+      _next.text == _confirm.text;
 
   Future<void> _save() async {
     setState(() {
@@ -769,8 +773,9 @@ class _DeleteAccountSheetState extends State<_DeleteAccountSheet> {
             style: TextStyle(fontSize: 13, height: 1.5, color: c.mutedForeground),
             children: const [
               TextSpan(
-                text: 'This permanently erases your profile, reports and trusted circle. '
-                    'Fingerprints already written to the blockchain stay there. This ',
+                text: 'This permanently erases your profile, reports and trusted circle '
+                    'from our database. Evidence fingerprints already written to the '
+                    'blockchain, and files already pinned to IPFS, cannot be deleted. This ',
               ),
               TextSpan(
                 text: 'cannot be undone.',

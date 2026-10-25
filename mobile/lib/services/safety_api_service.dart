@@ -6,14 +6,12 @@ import 'package:latlong2/latlong.dart';
 import '../config.dart';
 
 class CrimeSpot {
-  final int id;
   final double latitude;
   final double longitude;
   final double distanceKm;
   final double weight;
 
   CrimeSpot({
-    required this.id,
     required this.latitude,
     required this.longitude,
     required this.distanceKm,
@@ -22,7 +20,6 @@ class CrimeSpot {
 
   factory CrimeSpot.fromJson(Map<String, dynamic> json) {
     return CrimeSpot(
-      id: (json['id'] as num).toInt(),
       latitude: (json['lat'] as num).toDouble(),
       longitude: (json['lng'] as num).toDouble(),
       distanceKm: (json['distance_km'] as num).toDouble(),

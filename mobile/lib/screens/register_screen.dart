@@ -1,11 +1,11 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/api_service.dart';
 import '../state/auth_state.dart';
 import '../theme.dart';
+import '../utils/json_utils.dart';
+import '../utils/validation.dart';
 import '../widgets/ss_ui.dart';
 
 /// Two-step sign up from the design: personal info, then credentials,
@@ -77,8 +77,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() => _error = 'Please enter a valid email address.');
       return;
     }
-    if (_password.text.length < 6) {
-      setState(() => _error = 'Password must be at least 6 characters.');
+    if (_password.text.length < kMinPasswordLength) {
+      setState(() => _error = 'Password must be at least $kMinPasswordLength characters.');
       return;
     }
     if (_password.text != _confirm.text) {
@@ -99,14 +99,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (!mounted) return;
 
       if (response.statusCode != 201) {
-        String message = 'Registration failed';
-        try {
-          final data = jsonDecode(response.body) as Map<String, dynamic>;
-          message = data['error'] as String? ?? message;
-        } catch (_) {}
         setState(() {
           _loading = false;
-          _error = message;
+          _error = errorMessage(response, fallback: 'Registration failed');
         });
         return;
       }
@@ -296,13 +291,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final pw = _password.text;
     final confirm = _confirm.text;
 
-    final strength = pw.length < 3
-        ? 'Weak'
-        : pw.length < 6
-            ? 'Fair'
-            : pw.length < 9
-                ? 'Good'
-                : 'Strong';
+    // Four steps, tied to the real minimum: below it the password is
+    // rejected, so it is never shown as better than "Too short".
+    final level = pw.length < 4
+        ? 1
+        : pw.length < kMinPasswordLength
+            ? 2
+            : pw.length < 12
+                ? 3
+                : 4;
+    final strength = switch (level) {
+      1 || 2 => 'Too short',
+      3 => 'Good',
+      _ => 'Strong',
+    };
 
     Color? confirmBorder;
     if (confirm.isNotEmpty) {
@@ -328,7 +330,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         SSTextField(
           controller: _password,
           label: 'Password',
-          hint: 'Min. 6 characters',
+          hint: 'Min. $kMinPasswordLength characters',
           icon: Icons.lock_outline_rounded,
           obscure: true,
           textInputAction: TextInputAction.next,
@@ -345,10 +347,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     margin: EdgeInsets.only(right: i < 4 ? 4 : 0),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(2),
-                      color: pw.length >= i * 3
-                          ? (i == 1
+                      color: i <= level
+                          ? (level == 1
                               ? AppColors.destructive
-                              : i == 2
+                              : level == 2
                                   ? AppColors.warning
                                   : AppColors.success)
                           : c.muted,
