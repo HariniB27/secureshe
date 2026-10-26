@@ -47,6 +47,7 @@ database and on-chain, the same code as the `PATCH` above) or retry a failed
 blockchain log. Reports marked anonymous never show a reporter.
 
 * Without `ADMIN_API_KEY` every `/admin` page answers 503.
+* The server itself answers 404 to anything that arrives through a tunnel or proxy (Cloudflare/ngrok/nginx headers, or a non-localhost `Host`), so a public tunnel never serves it; open it only at `http://127.0.0.1:5050/admin` on the machine running the backend.
 * **Do not expose it through a public tunnel or any internet-facing address.**
   Keep `HOST=127.0.0.1`, and if you must share your backend with a phone or
   teammate, share only the `/api` paths (for example a reverse proxy that

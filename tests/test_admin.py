@@ -250,3 +250,49 @@ def test_dashboard_counts_and_list_filter_and_pagination(app, admin_client):
     page2 = admin_client.get("/admin/reports?page=2").get_data(as_text=True)
     assert "Page 2 of 2" in page2
     assert admin_client.get("/admin/report/NOPE0000").status_code == 404
+
+
+# ------------------------------------------------------- local-only (tunnels)
+
+PROXY_HEADER_CASES = [
+    {"Cf-Connecting-Ip": "203.0.113.9"},
+    {"Cf-Ray": "8a1b2c3d4e5f-BOM"},
+    {"X-Forwarded-For": "203.0.113.9"},
+    {"X-Forwarded-Host": "demo.trycloudflare.com"},
+    {"X-Forwarded-Proto": "https"},
+    {"Forwarded": "for=203.0.113.9"},
+    {"X-Real-Ip": "203.0.113.9"},
+    {"Via": "1.1 cloudflare"},
+]
+
+
+@pytest.mark.parametrize("headers", PROXY_HEADER_CASES)
+def test_admin_is_404_for_proxied_requests(admin_client, headers):
+    for path in ("/admin/", "/admin/login", "/admin/reports", "/admin/report/ANY0000"):
+        assert admin_client.get(path, headers=headers).status_code == 404, (path, headers)
+    page = admin_client.get("/admin/login")
+    token = _token(page.get_data(as_text=True))
+    r = admin_client.post("/admin/login", data={"key": KEY, "csrf_token": token}, headers=headers)
+    assert r.status_code == 404
+    assert admin_client.get("/admin/").status_code == 302  # no session was created
+
+
+def test_admin_is_404_for_a_public_host_name(admin_client):
+    for host in ("demo-abc.trycloudflare.com", "abc123.ngrok-free.app", "192.168.1.20:5050", "example.com"):
+        assert admin_client.get("/admin/login", headers={"Host": host}).status_code == 404, host
+
+
+def test_admin_still_opens_on_loopback_hosts(admin_client):
+    for host in ("127.0.0.1:5050", "localhost:5050", "localhost", "[::1]:5050"):
+        assert admin_client.get("/admin/login", headers={"Host": host}).status_code == 200, host
+
+
+def test_proxied_request_gets_404_even_when_the_key_is_not_set(app, monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "")
+    r = app.test_client().get("/admin/", headers={"Cf-Connecting-Ip": "203.0.113.9"})
+    assert r.status_code == 404 and "ADMIN_API_KEY" not in r.get_data(as_text=True)
+
+
+def test_public_api_is_unaffected_by_proxy_headers(client):
+    r = client.get("/api/safety/live-reports", headers={"Cf-Connecting-Ip": "203.0.113.9", "X-Forwarded-For": "203.0.113.9"})
+    assert r.status_code == 200
