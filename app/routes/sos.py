@@ -155,7 +155,14 @@ def trigger_sos():
         f"(sent automatically by SecureShe)"
     )
 
-    client = get_twilio_client()
+    try:
+        client = get_twilio_client()
+    except RuntimeError:
+        # Not configured on this server. The app treats any non-200 as
+        # "server alert failed" and falls back to texting from the SIM.
+        return jsonify({
+            "error": "SOS texting is not configured on the server (Twilio settings missing)"
+        }), 503
     results = []
     for contact in contacts:
         try:
