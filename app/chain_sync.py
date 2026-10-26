@@ -59,8 +59,11 @@ def _record_failure(complaint, message, *, final=False):
 # Log transaction
 # ---------------------------------------------------------------------------
 
-def attempt_log(complaint):
-    """Broadcast logComplaint now. Returns as soon as the tx is sent."""
+def attempt_log(complaint, commit=True):
+    """Broadcast logComplaint now. Returns as soon as the tx is sent.
+
+    commit=False leaves the commit to the caller (the submit route does one
+    commit for the insert and the tx hash, saving database round trips)."""
     complaint.chain_attempts = (complaint.chain_attempts or 0) + 1
     complaint.chain_sent_at = _now()
     complaint.blockchain_tx = None
@@ -89,7 +92,8 @@ def attempt_log(complaint):
         log.warning('[chain] %s send failed: %s', complaint.complaint_id, _short_error(e))
         _record_failure(complaint, _short_error(e))
 
-    db.session.commit()
+    if commit:
+        db.session.commit()
 
 
 def _record_or_none(complaint_id):

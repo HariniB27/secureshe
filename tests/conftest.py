@@ -52,7 +52,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(complaints_routes, "upload_to_pinata", fake_upload)
     monkeypatch.setattr(complaints_routes, "PINATA_API_KEY", "test-pinata-key")
     monkeypatch.setattr(complaints_routes, "PINATA_SECRET_API_KEY", "test-pinata-secret")
-    monkeypatch.setattr(chain_sync, "attempt_log", lambda complaint: None)
+    monkeypatch.setattr(chain_sync, "attempt_log", lambda complaint, **kw: None)
     monkeypatch.setattr(chain_sync, "kick_status_sync", lambda complaint: None)
 
     application.extensions["test_uploads"] = uploads
