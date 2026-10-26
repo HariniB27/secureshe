@@ -1,3 +1,4 @@
+import 'screens/home_menu_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -35,7 +36,7 @@ class SecureSheApp extends StatelessWidget {
         '/': (context) => const SplashScreen(),
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
-        '/home': (context) => const PlaceholderScreen(title: 'Home'),
+        '/home': (context) => const HomeMenuScreen(),
         '/complaint': (context) => const ComplaintScreen(),
         '/archive': (context) => const ArchiveLockScreen(),
         '/sos': (context) => const SosScreen(),

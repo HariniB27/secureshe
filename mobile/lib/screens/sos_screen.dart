@@ -35,7 +35,7 @@
 // NOTE: the zone-alert / proactive feature has been deliberately left out
 // of this file for now — add it back once Janice's safety-zone endpoint
 // is ready and you've given me its exact route + response shape.
-
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -73,7 +73,8 @@ class _SosScreenState extends State<SosScreen> {
 
   Future<bool> _isOnline() async {
     final result = await Connectivity().checkConnectivity();
-    return result != ConnectivityResult.none;
+    // connectivity_plus 6.x returns a List. Offline = empty or only "none".
+    return result.isNotEmpty && !result.every((r) => r == ConnectivityResult.none);
   }
 
   // ---------------------------------------------------------------------
@@ -118,7 +119,7 @@ class _SosScreenState extends State<SosScreen> {
           "latitude": position.latitude,
           "longitude": position.longitude,
         }),
-      ));
+      )).timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         setState(() { _sending = false; _statusText = "SOS sent to your trusted contacts."; });
       } else {
