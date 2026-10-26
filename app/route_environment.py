@@ -17,7 +17,11 @@ import requests
 
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-OVERPASS_TIMEOUT_S = 25
+# The public Overpass service is often slow. Give it about 8 s in total
+# (connect + wait for the answer), then fall back to the crime-only score so
+# the app is not left waiting.
+OVERPASS_CONNECT_S = 2
+OVERPASS_TIMEOUT_S = 6
 USER_AGENT = "SecureShe/1.0 (com.secureshe.mobile)"
 
 # How far a route point can be from a road and still count as "on" it.
@@ -127,7 +131,7 @@ def fetch_roads(points):
         OVERPASS_URL,
         data={"data": _overpass_query(points)},
         headers={"User-Agent": USER_AGENT},
-        timeout=OVERPASS_TIMEOUT_S + 5,
+        timeout=(OVERPASS_CONNECT_S, OVERPASS_TIMEOUT_S),
     )
     response.raise_for_status()
 

@@ -190,6 +190,12 @@ class SafetyApiService {
         .toList();
   }
 
+  /// The server gives the road-data service about 8 s, then scores on crime
+  /// alone; scoring a long route against the hosted database can itself take
+  /// ~17 s. This must stay comfortably above that total so the app shows the
+  /// fallback score instead of "Could not check route safety".
+  static const Duration routeCheckTimeout = Duration(seconds: 30);
+
   /// Scores whole routes on crime, road type and lighting.
   /// [routes] are lists of evenly spaced points along each route.
   Future<RouteCheckResult> checkRoutes({
@@ -213,8 +219,7 @@ class SafetyApiService {
             ],
           }),
         )
-        // Road data can take a few seconds the first time.
-        .timeout(const Duration(seconds: 40));
+        .timeout(routeCheckTimeout);
 
     if (response.statusCode != 200) {
       throw Exception('Route check failed: ${response.statusCode}');
