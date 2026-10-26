@@ -145,7 +145,13 @@ def trigger_sos():
             results.append({"contact": contact.name, "status": "sent", "sid": msg.sid})
         except TwilioRestException as e:
             # One bad number must not stop the rest.
-            results.append({"contact": contact.name, "status": "failed", "error": str(e)})
+            # Only Twilio's code and short message: str(e) carries terminal colour
+            # codes and the request URL with the account SID.
+            results.append({
+                "contact": contact.name,
+                "status": "failed",
+                "error": f"Twilio error {e.code}: {e.msg}",
+            })
 
     any_sent = any(r["status"] == "sent" for r in results)
     status_code = 200 if any_sent else 502
