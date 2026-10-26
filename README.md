@@ -36,6 +36,25 @@ python run.py                   # serves http://127.0.0.1:5050
   `curl -X PATCH http://127.0.0.1:5050/api/complaints/<ID>/status -H "X-Admin-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{"status":"UNDER_REVIEW"}'`
   Statuses, in order: `SUBMITTED, UNDER_REVIEW, INVESTIGATING, ACTION_TAKEN, RESOLVED`.
 
+### Admin portal
+
+A small server-rendered portal for reviewing reports: open
+`http://127.0.0.1:5050/admin` and sign in with the shared `ADMIN_API_KEY`
+(sessions last 30 minutes; 5 sign-in attempts per minute per IP). It shows
+counts by status and chain state, the latest reports, a filtered list, and a
+report page where you can move the status forward one step (written to the
+database and on-chain, the same code as the `PATCH` above) or retry a failed
+blockchain log. Reports marked anonymous never show a reporter.
+
+* Without `ADMIN_API_KEY` every `/admin` page answers 503.
+* **Do not expose it through a public tunnel or any internet-facing address.**
+  Keep `HOST=127.0.0.1`, and if you must share your backend with a phone or
+  teammate, share only the `/api` paths (for example a reverse proxy that
+  blocks `/admin`). It sets an HttpOnly, SameSite=Strict cookie and security
+  headers, but one shared key is not enough protection for the open internet.
+* Limitations: one shared key (no per-admin identity), no audit log beyond what
+  is written on-chain, no user management, no way to edit or delete reports.
+
 ### Historical crime data
 
 The `crime_district` table must be loaded once (needs `pandas` and `geopy`):
@@ -96,7 +115,7 @@ Checks: `flutter analyze` and `flutter test`.
 
 * No encryption of evidence: files on IPFS are public to anyone with the CID.
 * No push notifications; the Notifications screen is a log kept on the phone.
-* No admin UI: report statuses change through `PATCH /api/complaints/<id>/status` with the shared `ADMIN_API_KEY`.
+* Admin: a minimal local-only web portal at `/admin` (see above) or `PATCH /api/complaints/<id>/status`, both behind the one shared `ADMIN_API_KEY`: no per-admin identity, no audit log, no user management.
 * The offline SOS fallback (texting from the SIM) works only on Android with a SIM.
 * Twilio trial account: SOS texts reach only numbers verified in the Twilio console.
 * `TWILIO_TRIAL_TEMPLATE` (trial accounts only): the SMS contains only the template name, **not** the location message, and the app tells the user so. Keep it unset for real use.

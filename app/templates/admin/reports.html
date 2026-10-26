@@ -1,0 +1,18 @@
+{% extends "admin/base.html" %}
+{% block title %}Reports - SecureShe admin{% endblock %}
+{% block body %}
+<h1>Reports <span style="color:var(--muted);font-size:15px">({{ total }}{% if status %}, {{ status }}{% endif %})</span></h1>
+<form method="get" action="{{ url_for('admin.reports') }}" style="margin-bottom:12px">
+  <label for="status" style="display:inline;margin-right:8px">Status</label>
+  <select id="status" name="status" style="padding:8px;border-radius:8px;border:1px solid #c9d0de">
+    <option value="">All</option>{% for s in statuses %}<option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s }}</option>{% endfor %}
+  </select>
+  <button class="secondary" type="submit">Filter</button>
+</form>
+{% include "admin/_rows.html" %}
+<div class="pager">
+  {% if page > 1 %}<a href="{{ url_for('admin.reports', status=status, page=page-1) }}">&larr; Newer</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="{{ url_for('admin.reports', status=status, page=page+1) }}">Older &rarr;</a>{% endif %}
+</div>
+{% endblock %}

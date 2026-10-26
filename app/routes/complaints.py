@@ -274,6 +274,25 @@ def retry_chain(complaint_id):
     return jsonify(_complaint_json(complaint)), 202
 
 
+def apply_status_change(complaint, new_status):
+    """Write a new status to the database and push it on-chain without
+    waiting for the transaction to be mined. Returns the previous status.
+    Shared by the admin API (PATCH below) and the admin web portal."""
+    previous = complaint.status
+    if new_status != previous:
+        complaint.status = new_status
+        complaint.updated_at = datetime.utcnow()
+        db.session.commit()
+
+    # Idempotent: re-sending the same status retries the on-chain update.
+    try:
+        chain_sync.kick_status_sync(complaint)
+    except Exception:
+        db.session.rollback()
+        log.exception('[chain] could not start status sync for %s', complaint.complaint_id)
+    return previous
+
+
 def _admin_key_state():
     """'disabled' when no key is configured (fail closed), else True/False."""
     expected = os.getenv('ADMIN_API_KEY', '')
@@ -303,18 +322,7 @@ def admin_set_status(complaint_id):
     if not complaint:
         return _bad('Complaint not found', 404)
 
-    previous = complaint.status
-    if new_status != previous:
-        complaint.status = new_status
-        complaint.updated_at = datetime.utcnow()
-        db.session.commit()
-
-    # Idempotent: re-sending the same status retries the on-chain update.
-    try:
-        chain_sync.kick_status_sync(complaint)
-    except Exception:
-        db.session.rollback()
-        log.exception('[chain] could not start status sync for %s', complaint_id)
+    previous = apply_status_change(complaint, new_status)
 
     result = {
         'complaint_id': complaint.complaint_id,

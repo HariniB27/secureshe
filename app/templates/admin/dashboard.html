@@ -1,0 +1,11 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard - SecureShe admin{% endblock %}
+{% block body %}
+<h1>Dashboard <span style="color:var(--muted);font-size:15px">({{ total }} reports)</span></h1>
+<h2>By status</h2>
+<div class="cards">{% for name, n in status_counts %}<a class="card" style="text-decoration:none;color:inherit" href="{{ url_for('admin.reports', status=name) }}"><div class="n">{{ n }}</div><div class="l">{{ name }}</div></a>{% endfor %}</div>
+<h2>By blockchain state</h2>
+<div class="cards">{% for name, n in chain_counts %}<div class="card"><div class="n">{{ n }}</div><div class="l">{{ name }}</div></div>{% endfor %}</div>
+<h2>Latest 50 reports</h2>
+{% include "admin/_rows.html" %}
+{% endblock %}
