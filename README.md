@@ -4,6 +4,16 @@ Women's safety app: a Flask API (`app/`) and a Flutter client (`mobile/`),
 with report evidence pinned to IPFS and its fingerprint logged on the
 Sepolia blockchain (`blockchain/`).
 
+**Stack:** Flask, SQLAlchemy and PostgreSQL (Neon; SQLite for local tests),
+JWT auth, Pinata (IPFS), web3.py with the `SecureSheRegistry` contract on
+Sepolia, Twilio for SOS texts. Flutter app with `flutter_map` on
+**OpenStreetMap** tiles (no Mapbox), OSRM routing, Nominatim place search and
+Overpass road/lighting data for route safety. NCRB district crime data
+(`data/raw/crime_by_district.csv`) for the historical risk layer.
+
+See `docs/IMPLEMENTATION_STATUS.md` for what is built and
+`docs/DEMO.md` for the review demo.
+
 ## Backend
 
 ```bash
@@ -25,6 +35,29 @@ python run.py                   # serves http://127.0.0.1:5050
 * Admin status updates need `ADMIN_API_KEY` in `.env`:
   `curl -X PATCH http://127.0.0.1:5050/api/complaints/<ID>/status -H "X-Admin-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" -d '{"status":"UNDER_REVIEW"}'`
   Statuses, in order: `SUBMITTED, UNDER_REVIEW, INVESTIGATING, ACTION_TAKEN, RESOLVED`.
+
+### Historical crime data
+
+The `crime_district` table must be loaded once (needs `pandas` and `geopy`):
+
+```bash
+pip install -r requirements-dev.txt
+PYTHONPATH=. python3 scripts/load_crime_district.py --dry-run   # reports, writes nothing
+PYTHONPATH=. python3 scripts/load_crime_district.py             # replaces crime_district
+```
+
+### Tests and live check
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                         # backend tests: throwaway SQLite, Pinata/chain/Twilio mocked
+PYTHONPATH=. python3 scripts/final_check.py    # read-only check of the real Neon, Sepolia, Overpass, Twilio
+cd mobile && flutter analyze && flutter test
+```
+
+`pytest` never uses your `.env` database. `final_check.py` does (read-only,
+apart from `--sos +91...`, which creates and then deletes a throwaway user to
+send one real SOS text).
 
 ### How a report reaches the blockchain
 
@@ -58,3 +91,16 @@ App Transport Security exception / Android cleartext permission in debug
 builds; prefer `https` for anything beyond local testing.
 
 Checks: `flutter analyze` and `flutter test`.
+
+## Known limitations
+
+* No encryption of evidence: files on IPFS are public to anyone with the CID.
+* No push notifications; the Notifications screen is a log kept on the phone.
+* No admin UI: report statuses change through `PATCH /api/complaints/<id>/status` with the shared `ADMIN_API_KEY`.
+* The offline SOS fallback (texting from the SIM) works only on Android with a SIM.
+* Twilio trial account: SOS texts reach only numbers verified in the Twilio console.
+* Plain HTTP to a local backend by default (`http://127.0.0.1:5050`); use HTTPS for anything hosted.
+* Rate limiting is in memory: it resets on restart and isn't shared across processes unless `RATELIMIT_STORAGE_URI` points at Redis.
+* Free public OpenStreetMap services (tiles, OSRM, Nominatim, Overpass) are fine for a demo but not for launch traffic; if Overpass is down, route checks fall back to crime data only.
+
+Full list: `docs/IMPLEMENTATION_STATUS.md`.
