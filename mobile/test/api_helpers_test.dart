@@ -1,8 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
 
 import 'package:mobile/models/report.dart';
 import 'package:mobile/services/safety_api_service.dart';
+import 'package:mobile/theme.dart';
+import 'package:mobile/widgets/map_widgets.dart';
 import 'package:mobile/services/sos_service.dart';
 import 'package:mobile/utils/json_utils.dart';
 
@@ -60,6 +63,34 @@ void main() {
 
     test('falls back for other failures', () {
       expect(errorMessage(res(404, 'nope'), fallback: 'Could not load.'), 'Could not load.');
+    });
+  });
+
+  group('nearestDistrict', () {
+    DistrictCrime d(String name, double lat, double lng, {double intensity = 0.1}) => DistrictCrime(
+          district: name, state: 'TN', year: 2015, totalCrimes: 10, intensity: intensity, point: LatLng(lat, lng));
+
+    test('picks the closest district and reports its distance in km', () {
+      final r = nearestDistrict(
+        [d('Far', 28.6, 77.2), d('Vellore', 12.9165, 79.1325), d('Chittoor', 13.2, 79.1)],
+        const LatLng(12.9692, 79.1559),
+      );
+      expect(r, isNotNull);
+      expect(r!.$1.district, 'Vellore');
+      expect(r.$2, inInclusiveRange(5, 8));
+    });
+
+    test('returns null when nothing is within the limit, or there is no data', () {
+      expect(nearestDistrict([d('Delhi', 28.6, 77.2)], const LatLng(12.97, 79.16)), isNull);
+      expect(nearestDistrict([], const LatLng(12.97, 79.16)), isNull);
+    });
+  });
+
+  group('districtColor', () {
+    test('runs green (low) to red (high)', () {
+      expect(districtColor(0), AppColors.success);
+      expect(districtColor(1), AppColors.destructive);
+      expect(districtColor(0.5), AppColors.warning);
     });
   });
 

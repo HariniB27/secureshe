@@ -370,6 +370,26 @@ class DistrictCrime {
   }
 }
 
+/// The district whose centre is closest to [from], and how far away it is in
+/// km, or null if there is none within [maxKm].
+(DistrictCrime, double)? nearestDistrict(
+  List<DistrictCrime> districts,
+  LatLng from, {
+  double maxKm = 150,
+}) {
+  const distance = Distance();
+  DistrictCrime? best;
+  var bestKm = double.infinity;
+  for (final d in districts) {
+    final km = distance.as(LengthUnit.Kilometer, from, d.point);
+    if (km < bestKm) {
+      bestKm = km;
+      best = d;
+    }
+  }
+  return best == null || bestKm > maxKm ? null : (best, bestKm);
+}
+
 class CrimeMapPoint {
   final double latitude;
   final double longitude;
