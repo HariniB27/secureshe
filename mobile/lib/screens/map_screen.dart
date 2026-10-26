@@ -189,6 +189,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _loadStatic() async {
     try {
       final districts = await _api.fetchDistrictCrime();
+      // Low intensity first, so the worst districts are drawn on top.
+      districts.sort((a, b) => a.intensity.compareTo(b.intensity));
       if (mounted) setState(() => _districts = districts);
     } catch (e) {
       debugPrint('District data failed: $e');
@@ -923,7 +925,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
           children: [
             themedTileLayer(context),
-            if (showHeat && !_routeSet)
+            // Historical crimes against women by district (NCRB 2015, static
+            // data): a soft area circle plus a dot sized and coloured by
+            // intensity. The dot is in screen pixels, so it stays visible at
+            // any zoom. Drawn under the live reports and flags.
+            if (showHeat && !_routeSet) ...[
               CircleLayer(
                 circles: [
                   for (final d in _districts)
@@ -931,12 +937,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       point: d.point,
                       radius: 4000 + 16000 * math.sqrt(d.intensity),
                       useRadiusInMeter: true,
-                      color: districtColor(d.intensity).withValues(alpha: 0.14),
-                      borderColor: districtColor(d.intensity).withValues(alpha: 0.35),
-                      borderStrokeWidth: 1,
+                      color: districtColor(d.intensity).withValues(alpha: 0.12),
+                      borderColor: districtColor(d.intensity).withValues(alpha: 0.5),
+                      borderStrokeWidth: 1.5,
                     ),
                 ],
               ),
+              CircleLayer(
+                circles: [
+                  for (final d in _districts)
+                    CircleMarker(
+                      point: d.point,
+                      radius: 5 + 11 * math.sqrt(d.intensity),
+                      color: districtColor(d.intensity).withValues(alpha: 0.75),
+                      borderColor: Colors.white.withValues(alpha: 0.85),
+                      borderStrokeWidth: 1.5,
+                    ),
+                ],
+              ),
+            ],
             if (me != null) CircleLayer(circles: [userAccuracyCircle(me, _accuracy)]),
             if (_routeSet) PolylineLayer(polylines: _polylines()),
             MarkerLayer(
@@ -1013,7 +1032,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         Positioned(
           top: legendTop,
           left: 12,
-          child: _Legend(routeSet: _routeSet),
+          child: _Legend(
+            routeSet: _routeSet,
+            showDistricts: showHeat && !_routeSet && _districts.isNotEmpty,
+            nearest: nearestDistrict(_districts, me ?? _defaultCenter),
+          ),
         ),
 
         if (!tall)
@@ -1640,9 +1663,15 @@ class _GlassPill extends StatelessWidget {
 }
 
 class _Legend extends StatelessWidget {
-  const _Legend({required this.routeSet});
+  const _Legend({
+    required this.routeSet,
+    this.showDistricts = false,
+    this.nearest,
+  });
 
   final bool routeSet;
+  final bool showDistricts;
+  final (DistrictCrime, double)? nearest;
 
   @override
   Widget build(BuildContext context) {
@@ -1660,7 +1689,8 @@ class _Legend extends StatelessWidget {
           ];
 
     return Container(
-      padding: const EdgeInsets.all(10),
+      constraints: const BoxConstraints(maxWidth: 160),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: c.sheet.withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(16),
@@ -1690,6 +1720,42 @@ class _Legend extends StatelessWidget {
                 ],
               ),
             ),
+          if (showDistricts) ...[
+            Container(height: 1, color: c.border),
+            const SizedBox(height: 5),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 18,
+                  height: 7,
+                  margin: const EdgeInsets.only(top: 2),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [AppColors.success, AppColors.warning, AppColors.destructive],
+                    ),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    'Historical crimes against women by district (NCRB 2015)',
+                    style: TextStyle(fontSize: 8, color: c.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+            Text(
+              'Static data, not live.',
+              style: TextStyle(fontSize: 8, fontStyle: FontStyle.italic, color: c.mutedForeground),
+            ),
+            if (nearest != null)
+              Text(
+                'Nearest: ${nearest!.$1.district}, ${nearest!.$1.totalCrimes} cases, ${nearest!.$2.round()} km',
+                style: TextStyle(fontSize: 8, color: c.foreground),
+              ),
+          ],
         ],
       ),
     );
