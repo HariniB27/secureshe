@@ -165,17 +165,22 @@ def submit_complaint():
         chain_sent_at=datetime.utcnow(),
     )
     db.session.add(complaint)
-    db.session.commit()
+    # Each database round trip is slow (hosted, far away), so: insert now (the
+    # worker can't see the row until the commit below), broadcast the log
+    # transaction, then ONE commit that stores the row and the tx hash. The
+    # response is built before the commit so nothing is re-read afterwards.
+    db.session.flush()
 
-    # Broadcast the log transaction and return straight away; the worker
-    # confirms it (and retries if needed). A chain problem never fails the report.
+    # Broadcast and return straight away; the worker confirms it (and retries
+    # if needed). A chain problem never fails the report.
     try:
-        chain_sync.attempt_log(complaint)
+        chain_sync.attempt_log(complaint, commit=False)
     except Exception:
-        db.session.rollback()
         log.exception('[chain] could not start logging %s', complaint_id)
 
-    return jsonify({'message': 'Complaint submitted successfully', **_complaint_json(complaint)}), 201
+    payload = {'message': 'Complaint submitted successfully', **_complaint_json(complaint)}
+    db.session.commit()
+    return jsonify(payload), 201
 
 
 def _evidence_list(ipfs_cid):

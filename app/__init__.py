@@ -36,11 +36,14 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-    # Hosted Postgres drops idle connections; check and recycle them so a
-    # stale connection doesn't fail the next request.
+    # Hosted Postgres drops idle connections, so every checkout is pinged and a
+    # dead one is replaced. A new connection to the remote database costs
+    # several seconds (TLS + auth), so don't recycle healthy ones every 5
+    # minutes, and reuse the most recently used one so it stays warm.
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "pool_pre_ping": True,
-        "pool_recycle": 300,
+        "pool_recycle": 1800,
+        "pool_use_lifo": True,
     }
 
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
