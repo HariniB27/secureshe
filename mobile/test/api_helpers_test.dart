@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:mobile/models/report.dart';
+import 'package:mobile/services/sos_service.dart';
 import 'package:mobile/utils/json_utils.dart';
 
 http.Response res(int code, String body) => http.Response(body, code);
@@ -58,6 +59,23 @@ void main() {
 
     test('falls back for other failures', () {
       expect(errorMessage(res(404, 'nope'), fallback: 'Could not load.'), 'Could not load.');
+    });
+  });
+
+  group('sosServerSuccessMessage', () {
+    test('a normal send says the circle was alerted with the location', () {
+      expect(sosServerSuccessMessage({'template_mode': false}),
+          'Your trusted circle was alerted with your location.');
+      expect(sosServerSuccessMessage({'results': []}),
+          'Your trusted circle was alerted with your location.');
+      expect(sosServerSuccessMessage(null),
+          'Your trusted circle was alerted with your location.');
+    });
+
+    test('template mode says the location was NOT sent', () {
+      final text = sosServerSuccessMessage({'template_mode': true});
+      expect(text, contains('without your location'));
+      expect(text, isNot(contains('alerted with your location')));
     });
   });
 

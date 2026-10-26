@@ -99,6 +99,7 @@ Checks: `flutter analyze` and `flutter test`.
 * No admin UI: report statuses change through `PATCH /api/complaints/<id>/status` with the shared `ADMIN_API_KEY`.
 * The offline SOS fallback (texting from the SIM) works only on Android with a SIM.
 * Twilio trial account: SOS texts reach only numbers verified in the Twilio console.
+* `TWILIO_TRIAL_TEMPLATE` (trial accounts only): the SMS contains only the template name, **not** the location message, and the app tells the user so. Keep it unset for real use.
 * Plain HTTP to a local backend by default (`http://127.0.0.1:5050`); use HTTPS for anything hosted.
 * Rate limiting is in memory: it resets on restart and isn't shared across processes unless `RATELIMIT_STORAGE_URI` points at Redis.
 * Free public OpenStreetMap services (tiles, OSRM, Nominatim, Overpass) are fine for a demo but not for launch traffic; if Overpass is down, route checks fall back to crime data only.

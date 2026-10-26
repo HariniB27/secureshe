@@ -44,7 +44,7 @@ flutter run --dart-define=API_BASE_URL=http://127.0.0.1:5050
 | 1:30 | The report opens its **status** screen. Wait for the blockchain card to change from Pending to **"Confirmed on the blockchain"** (usually under a minute; it polls). Tap **View on Etherscan**. | Tamper-evidence: the transaction on Sepolia holds the complaint id and evidence hash. **View Evidence** opens the IPFS file. |
 | 2:30 | **Map** tab: safety score near you, live reports (your report appears, rounded to ~110 m), switch 1 Hour / 24 Hours / This Week, plan a walking route and compare the scores. | Live reports + NCRB district data; route scoring adds road type and lighting at night. |
 | 3:30 | **Circle** tab: **Add Contact** with a number verified in Twilio (E.164, e.g. `+91…`). | Max 5 contacts; cached on the phone for the offline fallback. |
-| 4:00 | **Home**: hold the **SOS** button 3 seconds, let the countdown finish. | The server texts the circle through Twilio with a Google Maps link. |
+| 4:00 | **Home**: hold the **SOS** button 3 seconds, let the countdown finish. | The server texts the circle through Twilio with a Google Maps link. If `TWILIO_TRIAL_TEMPLATE` is set (trial accounts), the SMS is only the template name and does NOT include the location; the app says so. Leave it unset once the account is upgraded. |
 | 4:45 | Profile → Privacy & Security → **Delete Account**. | Removes the user, reports and contacts from the database (on-chain hashes and IPFS files stay). |
 
 ## If something is down

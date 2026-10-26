@@ -78,5 +78,24 @@ def test_trial_template_replaces_body(client, auth_headers, monkeypatch):
     monkeypatch.setattr(sos_routes, "_twilio_client", SimpleNamespace(messages=Messages()))
     monkeypatch.setenv("TWILIO_TRIAL_TEMPLATE", "sms_internal_alerts")
     _add_contact(client, auth_headers)
-    assert client.post("/api/sos/trigger", headers=auth_headers, json=LOCATION).status_code == 200
+    r = client.post("/api/sos/trigger", headers=auth_headers, json=LOCATION)
+    assert r.status_code == 200
     assert sent == ["sms_internal_alerts"]
+    assert r.get_json()["template_mode"] is True
+
+
+def test_template_mode_is_false_when_variable_unset(client, auth_headers, monkeypatch):
+    sent = []
+
+    class Messages:
+        def create(self, body, from_, to):
+            sent.append(body)
+            return SimpleNamespace(sid="SMreal")
+
+    monkeypatch.setattr(sos_routes, "_twilio_client", SimpleNamespace(messages=Messages()))
+    monkeypatch.delenv("TWILIO_TRIAL_TEMPLATE", raising=False)
+    _add_contact(client, auth_headers)
+    r = client.post("/api/sos/trigger", headers=auth_headers, json=LOCATION)
+    assert r.status_code == 200
+    assert r.get_json()["template_mode"] is False
+    assert "google.com/maps" in sent[0]  # the real message with the location link
