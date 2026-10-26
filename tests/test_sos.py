@@ -65,3 +65,18 @@ def test_trigger_with_twilio(client, auth_headers, monkeypatch, fail, expected):
         assert result["sid"].startswith("SM")
     else:
         assert result["status"] == "failed"
+
+
+def test_trial_template_replaces_body(client, auth_headers, monkeypatch):
+    sent = []
+
+    class Messages:
+        def create(self, body, from_, to):
+            sent.append(body)
+            return SimpleNamespace(sid="SMtrial")
+
+    monkeypatch.setattr(sos_routes, "_twilio_client", SimpleNamespace(messages=Messages()))
+    monkeypatch.setenv("TWILIO_TRIAL_TEMPLATE", "sms_internal_alerts")
+    _add_contact(client, auth_headers)
+    assert client.post("/api/sos/trigger", headers=auth_headers, json=LOCATION).status_code == 200
+    assert sent == ["sms_internal_alerts"]

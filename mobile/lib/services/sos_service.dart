@@ -50,15 +50,20 @@ class SosService {
     }
 
     final connectivity = await Connectivity().checkConnectivity();
-    final online = !connectivity.contains(ConnectivityResult.none);
+    // connectivity_plus 6.x returns a list. Offline = empty or only "none".
+    final online = connectivity.isNotEmpty &&
+        !connectivity.every((r) => r == ConnectivityResult.none);
 
     if (online) {
       onStatus?.call('Alerting your trusted circle…');
       try {
+        // Don't leave someone waiting on a slow or hung server: after this,
+        // fall back to texting from the SIM (Sreshta used 4 s on her phone;
+        // 8 s leaves room for Twilio to text up to 5 contacts).
         final response = await ApiService.triggerSos(
           latitude: position.latitude,
           longitude: position.longitude,
-        );
+        ).timeout(const Duration(seconds: 8));
         if (response.statusCode == 200) {
           return SosResult(
             sent: true,
