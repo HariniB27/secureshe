@@ -1,4 +1,5 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:telephony/telephony.dart';
@@ -49,15 +50,20 @@ class SosService {
     }
 
     final connectivity = await Connectivity().checkConnectivity();
-    final online = !connectivity.contains(ConnectivityResult.none);
+    // connectivity_plus 6.x returns a list. Offline = empty or only "none".
+    final online = connectivity.isNotEmpty &&
+        !connectivity.every((r) => r == ConnectivityResult.none);
 
     if (online) {
       onStatus?.call('Alerting your trusted circle…');
       try {
+        // Don't leave someone waiting on a slow or hung server: after this,
+        // fall back to texting from the SIM (Sreshta used 4 s on her phone;
+        // 8 s leaves room for Twilio to text up to 5 contacts).
         final response = await ApiService.triggerSos(
           latitude: position.latitude,
           longitude: position.longitude,
-        );
+        ).timeout(const Duration(seconds: 8));
         if (response.statusCode == 200) {
           return SosResult(
             sent: true,
@@ -74,6 +80,17 @@ class SosService {
   }
 
   static Future<SosResult> _sendSms(Position position) async {
+    // The telephony plugin only exists on Android. Say so plainly on iOS
+    // instead of surfacing a MissingPluginException.
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return SosResult(
+        sent: false,
+        message: 'Could not reach the server, and texting directly from the '
+            'phone only works on Android. Call your contacts or emergency '
+            'services directly.',
+      );
+    }
+
     try {
       final telephony = Telephony.instance;
       final granted = await telephony.requestSmsPermissions;

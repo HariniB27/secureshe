@@ -3,12 +3,15 @@
 """
 Loads the year-by-year NCRB crime dataset into the CrimeDistrict table.
 
-Run:
+Run (dry run first; it reads the CSV and reports, but writes nothing):
+    PYTHONPATH=. python3 scripts/load_crime_district.py --dry-run
     PYTHONPATH=. python3 scripts/load_crime_district.py
 
+Needs pandas and geopy (pip install -r requirements-dev.txt).
 Deletes existing crime_district rows first, then reloads the dataset.
 """
 
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -27,7 +30,7 @@ from scripts.build_district_baseline import (
 RAW_PATH = Path("data/raw/crime_by_district.csv")
 
 
-def main():
+def main(dry_run=False):
 
     app = create_app()
 
@@ -104,6 +107,10 @@ def main():
             )
         ]
 
+        # Rows without a year can't be placed in time; skip them
+        # (rather than storing them as year 0).
+        df = df[df["Year"].notna()]
+
         # Remove other non-district entries
         df = df[
             ~df["District/ Area"].apply(is_non_district)
@@ -178,6 +185,15 @@ def main():
             f"{missing_coords} still missing coordinates."
         )
 
+        years = sorted({r.year for r in rows_to_insert})
+        existing = db.session.query(CrimeDistrict).count()
+        print(f"Years in CSV: {years[0]}..{years[-1]} ({len(years)} years)" if years else "No rows.")
+        print(f"crime_district currently has {existing} rows.")
+
+        if dry_run:
+            print("Dry run: nothing written.")
+            return
+
         # Delete old data
         db.session.query(
             CrimeDistrict
@@ -198,4 +214,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(dry_run="--dry-run" in sys.argv)

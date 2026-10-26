@@ -1,6 +1,7 @@
 # SecureShe: implementation status
 
-Written from the code on `main` at `739f74d` (merge of PR #7), read file by file.
+Written from the code on `main` at `739f74d` (merge of PR #7), read file by file;
+the API table and limitations were corrected on `chore/final-cleanup`.
 "Verified in use" means it was exercised in the iOS simulator or against the
 real backend during review; everything else is read from code and has not been
 run in this review.
@@ -82,12 +83,12 @@ status changes on-chain. Gas is the node's estimate times 1.3, capped by
 
 | Method and path | Auth | What it does |
 |---|---|---|
-| `GET /score?lat=&lng=` | none | Safety score and band for a point (live reports plus historical district data). |
+| `GET /score?lat=&lng=` | none | Safety score and band for a point (live reports plus historical district data). Echoes the caller's own query coordinates at full precision; the nearby report spots it lists are rounded to 3 decimals, with no ids. |
 | `POST /scores/batch` | none | Same, for a list of `{lat, lng}` points. |
-| `GET /heatmap?district=&state=` | none | Heat points for a district from the crime dataset. |
-| `GET /live-reports?hours=` or `?since=` | none | Recent reports as GeoJSON for the map. Public data only: coordinates rounded to 3 decimals, no ids, anonymous reports excluded (they still count in scoring). |
-| `GET /crime-points` | none | Crime points from the loaded dataset. |
-| `GET /historical-crime-points` | none | District-level historical crime points. |
+| `GET /heatmap?district=&state=` | none | Report points within 25 km of a district centre from the crime dataset. An unknown district (or an empty `crime_district` table) returns 200 with `matched: false` and no points, not a 404. |
+| `GET /live-reports?hours=` or `?since=` | none | Recent reports as GeoJSON for the map. Public data only: coordinates rounded to 3 decimals, a timestamp (`reported_at`, `age_hours`), a recency weight and the internal numeric row id (`properties.id`, used by the app to de-duplicate; not the complaint id). No description or complaint id. Anonymous reports excluded (they still count in scoring). |
+| `GET /crime-points` | none | Alias of `/live-reports`, kept for older app builds. |
+| `GET /historical-crime-points` | none | District-level historical crime points (latest year per district, NCRB data loaded by `scripts/load_crime_district.py`). |
 | `POST /route-check` | none | Scores up to a fixed maximum of candidate routes (live and historical risk plus a night factor). |
 | `POST /flags` | JWT | Adds a community flag (`dark-street`, `harassment`, `suspicious`, `safe-zone`) at a location; limited per user per hour. |
 | `GET /flags?hours=` | none | Recent flags, public data only. |
@@ -118,7 +119,7 @@ status changes on-chain. Gas is the node's estimate times 1.3, capped by
 3. IPFS content cannot be reliably deleted. Deleting an account removes our database rows, not pinned files or on-chain records.
 4. The server and Pinata can see descriptions, locations, categories, timing and file sizes. "Anonymous" hides the reporter from the public map and lists, not from the server.
 5. There is no per-file or total byte limit on upload. The server enforces a 5-file cap and a 30-second timeout per file to Pinata, and it reads each file fully into memory. The app enforces the 5-file cap and re-encodes photos at quality 85. Pinata's own maximum was not tested.
-6. Reports 2F15C0EA and E789F6F3 are confirmed on-chain, but their `blockchain_tx` is empty, so the app shows no Etherscan link for them. A guarded backfill has been drafted and is waiting for approval.
+6. Reports 2F15C0EA and E789F6F3 were confirmed on-chain with an empty `blockchain_tx`; they have since been backfilled. `scripts/final_check.py` checks that every complaint row has a tx hash and `chain_status = confirmed`.
 
 **Blockchain**
 7. If the chain log fails three times the report is marked `failed`; the user can retry from the status screen, but nothing alerts anyone.
@@ -131,15 +132,15 @@ status changes on-chain. Gas is the node's estimate times 1.3, capped by
 12. Two-Factor Authentication and Stealth Mode are shown as "Soon". Active Sessions, Marketing Emails and Crash Reports from the design are not built.
 13. The Safe Trips and SOS Sent counters on Profile are local to the phone.
 14. Trip tracking never alerts the circle automatically (off-route and check-in warnings stay on this phone), and it has no background location (no background-location setting in the iOS config or the code), so it only works while the app is open.
-15. Direct SMS from the SIM for offline SOS works only on Android with a SIM. On iOS the offline fallback does not send anything.
+15. Direct SMS from the SIM for offline SOS works only on Android with a SIM. On iOS the offline fallback does not send anything; the app says so and tells the user to call instead.
 16. SOS texts depend on Twilio credentials and, on a trial Twilio account, on verified destination numbers. Not exercised in this review.
 17. The default API address is `http://127.0.0.1:5050` (`http://10.0.2.2:5050` on Android emulators). A real device needs `--dart-define=API_BASE_URL=...`, and the connection is plain HTTP.
 18. Map tiles, place search and walking/driving routes use free public OpenStreetMap services (see the note in `routing_service.dart`), which are not suitable for public-launch traffic.
 
 **Backend and operations**
-19. There is no automated backend test suite in the repo. The Flutter tests cover the JSON/error helpers and `Report.fromJson` only.
+19. The backend test suite (`tests/`, run with `pytest`) uses a throwaway SQLite database with Pinata, the chain and Twilio mocked, so it does not prove the live services work; `scripts/final_check.py` checks those. The Flutter tests cover the JSON/error helpers and `Report.fromJson` only.
 20. Rate limiting uses in-memory storage, so it resets on restart and does not work across multiple processes unless `RATELIMIT_STORAGE_URI` points at Redis.
 21. The backend log shows a library warning that the JWT signing key in the local `.env` is 25 bytes, below the recommended 32. Rotating it signs every user out.
-22. `app/routes/sos.py` still contains the original pasted migration and registration notes in comments, and it raises a plain error (HTTP 500) if the Twilio variables are missing.
+22. `app/routes/sos.py` still contains the original pasted migration and registration notes in comments. Without the Twilio variables `POST /api/sos/trigger` returns 503 and the app falls back to SIM SMS (Android only).
 23. Shared Neon database round trips take about 350 ms from a laptop, so list screens feel slower than on a local database.
 24. Only the iOS simulator build was run in this review. The Android build, a physical device and the Flutter web target were not tested.
