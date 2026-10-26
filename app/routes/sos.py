@@ -5,7 +5,9 @@ SOS + Trusted Circle blueprint for SecureShe.
 
 Twilio TRIAL accounts only accept a predefined template name as the message body.
 To demo the Twilio path on a trial account, set TWILIO_TRIAL_TEMPLATE in .env
-(e.g. TWILIO_TRIAL_TEMPLATE=sms_internal_alerts). Remove that line after upgrading
+(e.g. TWILIO_TRIAL_TEMPLATE=sms_internal_alerts). In that mode the SMS contains ONLY
+the template name: the location message is NOT sent, and the trigger response says
+"template_mode": true so the app can tell the user. Remove that line after upgrading
 and the real SOS text with the location link is sent instead.
 """
 
@@ -156,6 +158,7 @@ def trigger_sos():
     any_sent = any(r["status"] == "sent" for r in results)
     status_code = 200 if any_sent else 502
     return jsonify({
+        "template_mode": bool(trial_template),
         "sos_time_utc": datetime.utcnow().isoformat(),
         "location": {"latitude": latitude, "longitude": longitude},
         "results": results,

@@ -5,7 +5,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:telephony/telephony.dart';
 
 import '../state/contacts_state.dart';
+import '../utils/json_utils.dart';
 import 'api_service.dart';
+
+/// What to tell the user after the server reported the alert as sent.
+/// In Twilio trial-template mode the SMS carries only the template name and
+/// not the location, so the wording must not claim otherwise.
+String sosServerSuccessMessage(Map<String, dynamic>? body) {
+  if (body?['template_mode'] == true) {
+    return 'Alert sent as a Twilio trial template, without your location. '
+        'Call your contacts or emergency services to tell them where you are.';
+  }
+  return 'Your trusted circle was alerted with your location.';
+}
 
 class SosResult {
   SosResult({required this.sent, required this.message, this.viaSms = false});
@@ -67,7 +79,7 @@ class SosService {
         if (response.statusCode == 200) {
           return SosResult(
             sent: true,
-            message: 'Your trusted circle was alerted with your location.',
+            message: sosServerSuccessMessage(tryDecodeMap(response.body)),
           );
         }
         onStatus?.call('Server alert failed, texting directly…');
