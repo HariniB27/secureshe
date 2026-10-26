@@ -296,3 +296,14 @@ def test_proxied_request_gets_404_even_when_the_key_is_not_set(app, monkeypatch)
 def test_public_api_is_unaffected_by_proxy_headers(client):
     r = client.get("/api/safety/live-reports", headers={"Cf-Connecting-Ip": "203.0.113.9", "X-Forwarded-For": "203.0.113.9"})
     assert r.status_code == 200
+
+
+def test_admin_without_trailing_slash_does_not_redirect_or_reveal_itself(app, admin_client):
+    # Through a tunnel: a plain 404, not a 308 that would show the page exists.
+    r = admin_client.get("/admin", headers={"Cf-Connecting-Ip": "203.0.113.9"})
+    assert r.status_code == 404
+    r = admin_client.get("/admin", headers={"Host": "demo.trycloudflare.com"})
+    assert r.status_code == 404
+    # Locally it still works (redirects to the login page when signed out).
+    r = admin_client.get("/admin")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/admin/login")
