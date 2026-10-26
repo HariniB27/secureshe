@@ -159,3 +159,34 @@ def test_route_check_falls_back_when_overpass_is_down(client, monkeypatch):
     # Scored on crime data alone, with no road/lighting score.
     assert body["results"][0]["environment_score"] is None
     assert body["results"][0]["band"] in ("green", "yellow", "red")
+
+
+def test_route_check_gives_overpass_about_8_seconds_then_falls_back(client, monkeypatch):
+    import time
+    import requests
+    from app import route_environment
+
+    seen = {}
+
+    def slow_overpass(url, data=None, headers=None, timeout=None):
+        seen["timeout"] = timeout
+        # A slow service: it only ever answers after the caller's patience ends.
+        time.sleep(0.05)
+        raise requests.exceptions.ReadTimeout("overpass too slow")
+
+    monkeypatch.setattr(route_environment.requests, "post", slow_overpass)
+    route_environment._CACHE.clear()
+    started = time.time()
+    r = client.post("/api/safety/route-check", json={
+        "routes": [{"points": [[LAT, LNG], [LAT + 0.01, LNG + 0.01]], "distance_m": 1500}],
+        "hour": 21,
+    })
+    assert r.status_code == 200, r.get_json()
+    assert time.time() - started < 5
+    body = r.get_json()
+    assert body["environment_checked"] is False
+    assert body["results"][0]["environment_score"] is None
+    assert body["results"][0]["band"] in ("green", "yellow", "red")
+    # connect + read budget is about 8 s, not the old 30 s
+    connect_s, read_s = seen["timeout"]
+    assert 0 < connect_s + read_s <= 8

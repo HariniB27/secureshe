@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:mobile/models/report.dart';
+import 'package:mobile/services/safety_api_service.dart';
 import 'package:mobile/services/sos_service.dart';
 import 'package:mobile/utils/json_utils.dart';
 
@@ -59,6 +60,12 @@ void main() {
 
     test('falls back for other failures', () {
       expect(errorMessage(res(404, 'nope'), fallback: 'Could not load.'), 'Could not load.');
+    });
+  });
+
+  group('route check timeout', () {
+    test('outlasts the server fallback (about 8 s road data + about 17 s scoring)', () {
+      expect(SafetyApiService.routeCheckTimeout, greaterThanOrEqualTo(const Duration(seconds: 28)));
     });
   });
 
