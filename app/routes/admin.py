@@ -163,7 +163,7 @@ def _chain_state(complaint):
     return complaint.chain_status or 'pending'
 
 
-@admin_bp.get('/')
+@admin_bp.get('/', strict_slashes=False)  # no 308 redirect from /admin: the local-only guard must see it first
 def dashboard():
     by_status = dict(db.session.query(Complaint.status, func.count()).group_by(Complaint.status).all())
     by_chain = {}
