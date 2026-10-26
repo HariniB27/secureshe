@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+{% block title %}Report {{ c.complaint_id }} - SecureShe admin{% endblock %}
+{% block body %}
+<h1><span class="mono">{{ c.complaint_id }}</span> <span class="pill {{ c.status }}">{{ c.status }}</span></h1>
+<div class="panel">
+  <dl class="grid2">
+    <dt>Category</dt><dd>{{ c.category or '-' }}</dd>
+    <dt>Reporter</dt><dd>{% if c.anonymous %}Anonymous{% else %}{{ reporter or 'Unknown' }}{% endif %}</dd>
+    <dt>Description</dt><dd>{{ c.description or '-' }}</dd>
+    <dt>Location</dt><dd>{{ c.location_text or '-' }}</dd>
+    <dt>Coordinates</dt><dd>{% if c.latitude is not none and c.longitude is not none %}{{ '%.5f'|format(c.latitude) }}, {{ '%.5f'|format(c.longitude) }}{% else %}-{% endif %}</dd>
+    <dt>Anonymous</dt><dd>{{ 'Yes' if c.anonymous else 'No' }}</dd>
+    <dt>Created (UTC)</dt><dd>{{ c.created_at.strftime('%Y-%m-%d %H:%M:%S') if c.created_at else '-' }}</dd>
+    <dt>Updated (UTC)</dt><dd>{{ c.updated_at.strftime('%Y-%m-%d %H:%M:%S') if c.updated_at else '-' }}</dd>
+  </dl>
+</div>
+
+<h2>Evidence</h2>
+<div class="panel">
+  <dl class="grid2">
+    <dt>Evidence hash</dt><dd class="mono">{{ c.evidence_hash or '-' }}</dd>
+    <dt>Files</dt><dd>{% for e in evidence %}<a href="{{ e.url }}" target="_blank" rel="noopener noreferrer">File {{ loop.index }}</a> <span class="mono" style="color:var(--muted)">{{ e.cid[:14] }}...</span><br>{% else %}None{% endfor %}</dd>
+  </dl>
+</div>
+
+<h2>Blockchain</h2>
+<div class="panel">
+  <dl class="grid2">
+    <dt>Chain state</dt><dd><span class="pill {{ chain }}">{{ chain }}</span></dd>
+    <dt>Log transaction</dt><dd>{% if c.blockchain_tx %}<a class="mono" href="{{ etherscan_tx }}{{ c.blockchain_tx }}" target="_blank" rel="noopener noreferrer">{{ c.blockchain_tx }}</a>{% else %}-{% endif %}</dd>
+    <dt>Status on chain</dt><dd>{{ c.chain_synced_status or '-' }}</dd>
+    <dt>Status transaction</dt><dd>{% if c.status_tx %}<a class="mono" href="{{ etherscan_tx }}{{ c.status_tx }}" target="_blank" rel="noopener noreferrer">{{ c.status_tx }}</a>{% else %}-{% endif %}</dd>
+    <dt>Error</dt><dd>{{ c.chain_error or '-' }}</dd>
+    <dt>Attempts</dt><dd>{{ c.chain_attempts or 0 }}</dd>
+  </dl>
+  {% if chain == 'failed' %}
+  <form method="post" action="{{ url_for('admin.retry_chain', complaint_id=c.complaint_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="secondary" type="submit">Retry blockchain log</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2>Status</h2>
+<div class="panel">
+  <ol class="timeline">{% for name, done, current in flow %}<li class="{{ 'current' if current else ('done' if done else '') }}">{{ name }}</li>{% endfor %}</ol>
+  {% if next_status %}
+  <form method="post" action="{{ url_for('admin.change_status', complaint_id=c.complaint_id) }}" style="margin-top:10px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="status" value="{{ next_status }}">
+    <button type="submit">Move to {{ next_status }}</button>
+  </form>
+  {% else %}<p style="color:var(--muted)">This report is resolved.</p>{% endif %}
+</div>
+<p><a href="{{ url_for('admin.reports') }}">&larr; All reports</a></p>
+{% endblock %}

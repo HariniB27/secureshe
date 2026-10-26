@@ -1,0 +1,12 @@
+<div class="scroll"><table>
+  <tr><th>ID</th><th>Category</th><th>Status</th><th>Chain</th><th>Created (UTC)</th></tr>
+  {% for r in reports %}
+  <tr>
+    <td><a class="id" href="{{ url_for('admin.report_detail', complaint_id=r.complaint_id) }}">{{ r.complaint_id }}</a></td>
+    <td>{{ r.category or '-' }}</td>
+    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+    <td><span class="pill {{ chain_state(r) }}">{{ chain_state(r) }}</span></td>
+    <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '-' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="5" style="color:var(--muted)">No reports.</td></tr>{% endfor %}
+</table></div>

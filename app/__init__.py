@@ -44,6 +44,11 @@ def create_app():
     }
 
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+    # The signed session cookie is only used by the admin portal.
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+    app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
     app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
     # Token lifetimes in minutes (defaults: 30 minutes / 30 days). Only
     # shortened to test what the app does when a session really ends.
@@ -96,6 +101,9 @@ def create_app():
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(complaints_bp, url_prefix="/api/complaints")
     app.register_blueprint(safety_bp, url_prefix="/api/safety")
+    # Server-rendered admin portal; answers 503 until ADMIN_API_KEY is set.
+    from app.routes.admin import admin_bp
+    app.register_blueprint(admin_bp)
     # sos routes carry their own /api/... paths.
     app.register_blueprint(sos_bp)
 

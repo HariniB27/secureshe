@@ -47,6 +47,25 @@ flutter run --dart-define=API_BASE_URL=http://127.0.0.1:5050
 | 4:00 | **Home**: hold the **SOS** button 3 seconds, let the countdown finish. | The server texts the circle through Twilio with a Google Maps link. If `TWILIO_TRIAL_TEMPLATE` is set (trial accounts), the SMS is only the template name and does NOT include the location; the app says so. Leave it unset once the account is upgraded. |
 | 4:45 | Profile → Privacy & Security → **Delete Account**. | Removes the user, reports and contacts from the database (on-chain hashes and IPFS files stay). |
 
+## Optional: admin portal (about 1 minute)
+
+Open `http://127.0.0.1:5050/admin` in a browser on the same computer and sign
+in with `ADMIN_API_KEY` (the same shared key as the `PATCH` endpoint).
+
+1. **Dashboard**: counts by status and blockchain state, latest reports.
+2. Open the report you just submitted, press **Move to UNDER_REVIEW**. The page
+   shows the new status and the blockchain transaction; after about 15 seconds
+   reload to see "Status on chain" match.
+3. Reports marked anonymous show "Anonymous" and never a name.
+
+Notes for the room:
+
+* **Keep it off the public tunnel.** If the backend is shared with a phone or
+  through a tunnel (ngrok, Cloudflare, etc.), the tunnel must not forward
+  `/admin`; open it only on `127.0.0.1`. Without `ADMIN_API_KEY` it answers 503.
+* One shared key: no per-admin identity, no audit log beyond the on-chain
+  record, no user management, no editing or deleting reports.
+
 ## If something is down
 
 | Service | What you see | What to do |
