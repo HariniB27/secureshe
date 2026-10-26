@@ -30,8 +30,27 @@ PAGE_SIZE = 25
 CHAIN_STATES = ('pending', 'confirmed', 'failed')
 ETHERSCAN_TX = 'https://sepolia.etherscan.io/tx/'
 
+# A request that came through a tunnel or reverse proxy (Cloudflare, ngrok,
+# nginx...) carries at least one of these. The portal is local-only, so such
+# requests get the same 404 as a page that does not exist.
+PROXY_HEADERS = (
+    'Cf-Connecting-Ip', 'Cf-Ray', 'Cf-Visitor', 'Cf-Ipcountry', 'True-Client-Ip',
+    'X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto', 'X-Forwarded-Server',
+    'Forwarded', 'X-Real-Ip', 'Via',
+)
+LOCAL_HOSTS = ('127.0.0.1', 'localhost', '[::1]')
+
 
 # ------------------------------------------------------------------ guards
+
+def _is_local_request():
+    """Opened directly on this machine: no proxy headers and a loopback Host."""
+    if any(h in request.headers for h in PROXY_HEADERS):
+        return False
+    host = request.host.lower()
+    host = host[:host.index(']') + 1] if host.startswith('[') else host.split(':')[0]
+    return host in LOCAL_HOSTS
+
 
 def _key_configured():
     return bool(os.getenv('ADMIN_API_KEY', ''))
@@ -61,6 +80,8 @@ def _csrf_ok():
 @admin_bp.before_request
 def _before():
     g.csp_nonce = secrets.token_urlsafe(16)
+    if not _is_local_request():
+        abort(404)  # looks exactly like a page that does not exist
     if not _key_configured():
         return render_template('admin/message.html', title='Admin portal disabled',
                                message='The admin portal is disabled because ADMIN_API_KEY is not set on the server.'), 503
