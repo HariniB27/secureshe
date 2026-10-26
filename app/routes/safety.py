@@ -553,12 +553,19 @@ def get_safety_heatmap():
     )
 
     if not district_row:
+        # Unknown district (or no crime data loaded yet): an empty,
+        # zero-risk result rather than an error, so clients can render
+        # "nothing here" without special-casing a 404.
         return jsonify({
             "district": district,
             "state": state,
+            "matched": False,
+            "center": None,
+            "radius_km": 0,
             "points": [],
-            "message": "District not found"
-        }), 404
+            "total_crime_spots": 0,
+            "message": "No crime data for this district",
+        })
 
     center_lat = float(district_row.latitude)
     center_lng = float(district_row.longitude)
@@ -665,6 +672,7 @@ def get_safety_heatmap():
     return jsonify({
         "district": district,
         "state": state,
+        "matched": True,
         "center": {
             "lat": center_lat,
             "lng": center_lng,
