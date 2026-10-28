@@ -28,5 +28,13 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSLocationUsageDescription</key>
+	<string>SecureShe uses your location to show nearby safety reports, plan safe routes and send your position in an SOS.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SecureShe uses your location to show nearby safety reports, plan safe routes and send your position in an SOS.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>SecureShe uses the camera to capture photo or video evidence for a report.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SecureShe uses the microphone to record audio evidence for a report.</string>
 </dict>
 </plist>
